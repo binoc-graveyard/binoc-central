@@ -29,7 +29,7 @@
   <script type="application/javascript"
           src="chrome://navigator/content/navigator.js"/>
 
-  <!-- Places Bookmarks Utilities -->
+  <!-- Places Utilities -->
   <script type="application/javascript"
           src="chrome://communicator/content/places/browserPlacesViews.js"/>
   <script type="application/javascript"
@@ -98,7 +98,6 @@
     <key id="manBookmarkKb" key="&manBookmarksCmd.commandkey;" command="Browser:ManageBookmark" modifiers="accel"/>
 
     <!-- Tools Menu -->
-    <key id="searchInternetKb" key="&searchInternet.commandKey;" modifiers="accel,shift" command="Browser:SearchInternet"/>
 
     <!-- Misc -->
     <!-- the amazing fishcam, suppress warning by ',' at the beginning of modifiers, see bug 496322 -->
@@ -187,12 +186,19 @@
     <command id="feedsMenu" disabled="true"/>
     <commandset id="placesCommands"/>
 
+    <!-- Go Menu -->
+    <command id="Browser:Home"    oncommand="BrowserHome(event);"/>
+    <command id="Browser:Back"    oncommand="BrowserBack();"    observes="canGoBack"/>
+    <command id="Browser:Forward" oncommand="BrowserForward();" observes="canGoForward"/>
+    <command id="Browser:Up"      oncommand="BrowserUp();"      observes="canGoUp"/>
+
     <!-- History Menu -->
+
+    <!-- Command Sets -->
     <commandset id="viewZoomCommands"/>
     <commandset id="tasksCommands"/>
 
     <!-- Tools Menu -->
-    <command id="Browser:SearchInternet" oncommand="BrowserSearch.webSearch();"/>
     <command id="Tools:Sanitize"
              oncommand="Components.classes['@mozilla.org/suite/suiteglue;1'].getService(Components.interfaces.nsISuiteGlue).sanitize(window);"/>
 
@@ -224,19 +230,18 @@
             <menuitem id="menu_newPrivateWindow"/>
           </menupopup>
         </menu>
+        <!-- XXXTobin: Get rid of this
         <menuitem id="menu_openLocation"
                   label="&openCmd.label;"
                   accesskey="&openCmd.accesskey;"
                   key="openLocationKb"
                   command="Browser:Open"/>
+        -->
         <menuitem id="menu_openFile"
                   label="&openFileCmd.label;"
                   accesskey="&openFileCmd.accesskey;"
                   key="openFileKb"
                   command="Browser:OpenFile"/>
-        <menuitem id="menu_close"/>
-        <menuitem id="menu_closeOtherTabs" command="cmd_closeOtherTabs" label="&closeOtherTabs.label;" accesskey="&closeOtherTabs.accesskey;"/>
-        <menuitem id="menu_closeWindow" hidden="true" command="cmd_closeWindow" key="key_closeWindow" label="&closeWindow.label;" accesskey="&closeWindow.accesskey;"/>
         <menuseparator/>
         <menuitem id="savepage" valueSaveAs="&savePageAsCmd.label;" valueSave="&savePageCmd.label;"
                   accesskey="&savePageCmd.accesskey;" key="key_savePage" command="Browser:SavePage"/>
@@ -248,6 +253,10 @@
         <menuitem id="menu_print"/>
         <menuseparator/>
         <menuitem id="offlineGoOfflineCmd"/>
+        <menuseparator/>
+        <menuitem id="menu_close"/>
+        <menuitem id="menu_closeOtherTabs" hidden="true" command="cmd_closeOtherTabs" label="&closeOtherTabs.label;" accesskey="&closeOtherTabs.accesskey;"/>
+        <menuitem id="menu_closeWindow" hidden="true" command="cmd_closeWindow" key="key_closeWindow" label="&closeWindow.label;" accesskey="&closeWindow.accesskey;"/>
       </menupopup>
     </menu>
 
@@ -291,18 +300,18 @@
                       type="checkbox"
                       oncommand="showHideTabbar();"
                       checked="true"/>
-            <menuitem id="menuitem_taskbarCmd"
-                      label="&taskbarCmd.label;"
-                      accesskey="&taskbarCmd.accesskey;"
-                      class="menuitem-iconic"
-                      type="checkbox"
-                      observes="cmd_viewtaskbar"/>
             <menuitem id="menuitem_componentbarCmd"
                       label="&componentbarCmd.label;"
                       accesskey="&componentbarCmd.accesskey;"
                       class="menuitem-iconic"
                       type="checkbox"
                       observes="cmd_viewcomponentbar"/>
+            <menuitem id="menuitem_taskbarCmd"
+                      label="&taskbarCmd.label;"
+                      accesskey="&taskbarCmd.accesskey;"
+                      class="menuitem-iconic"
+                      type="checkbox"
+                      observes="cmd_viewtaskbar"/>
           </menupopup>
         </menu>
         <menuitem id="menuitem_fullScreen"
@@ -367,17 +376,62 @@
       </menupopup>
     </menu>
 
-    <menu id="history-menu"
+    <menu id="goMenu"
           label="&goMenu.label;"
+          accesskey="&goMenu.accesskey;"
           oncommand="gotoHistoryIndex(event);"
           onclick="checkForMiddleClick(this, event);">
       <menupopup id="goPopup"
                  onpopupshowing="updateGoMenu(event);">
+        <menuitem id="historyMenuBack"
+                  label="&goBackCmd.label;"
+                  accesskey="&goBackCmd.accesskey;"
+                  key="goBackKb"
+                  oncommand="BrowserBack(event);"
+                  onclick="checkForMiddleClick(this, event);"
+                  observes="canGoBack"/>
+        <menuitem id="historyMenuForward"
+                  label="&goForwardCmd.label;"
+                  accesskey="&goForwardCmd.accesskey;"
+                  key="goForwardKb"
+                  oncommand="BrowserForward(event);"
+                  onclick="checkForMiddleClick(this, event);"
+                  observes="canGoForward"/>
+        <menuitem id="historyMenuUp"
+                  label="&goUpCmd.label;"
+                  accesskey="&goUpCmd.accesskey;"
+                  key="goUpKb"
+                  command="Browser:Up"/>
+        <menuitem id="historyMenuHome"
+                  label="&goHomeCmd.label;"
+                  accesskey="&goHomeCmd.accesskey;"
+                  command="Browser:Home"
+                  onclick="checkForMiddleClick(this, event);"
+                  key="goHome"/>
+        <menuseparator id="startSessionHistorySeparator" hidden="true"/>
+        <menuseparator id="endSessionHistorySeparator" hidden="true"/>
+      </menupopup>
+    </menu>
+
+    <menu id="historyMenu"
+          label="&historyMenu.label;"
+          accesskey="&historyMenu.accesskey;">
+      <menupopup id="historyPopup"
+                 placespopup="true"
+                 context="placescontext"
+                 oncommand="BookmarksEventHandler.onCommand(event);"
+                 onclick="BookmarksEventHandler.onClick(event);"
+                 onpopupshowing="updateRecentMenuItems();
+                                 if (!this.parentNode._placesView) { new HistoryMenu(event); }">
         <menuitem id="menu_showAllHistory"
                   label="&historyCmd.label;"
                   accesskey="&historyCmd.accesskey;"
                   oncommand="toHistory()"
                   key="key_gotoHistory"/>
+        <menuitem id="sanitizeItem"
+                  label="&clearPrivateDataCmd.label;"
+                  accesskey="&clearPrivateDataCmd.accesskey;"
+                  key="key_sanitize" command="Tools:Sanitize"/>
         <menuseparator/>
         <menuitem id="historyRestoreLastSession"
                   label="&historyRestoreLastSession.label;"
@@ -398,14 +452,11 @@
                      onpopupshowing="event.stopPropagation(); updateRecentWindows(this);"
                      oncommand="undoCloseWindow(event.target.value);"/>
         </menu>
-        <menuseparator id="startHistorySeparator" hidden="true"/>
-        <menuseparator id="endHistorySeparator" hidden="true"/>
-        <menuitem id="sync-tabs-menuitem"
-                  label="&syncTabsMenu.label;"
-                  oncommand="BrowserOpenSyncTabs();"
-                  disabled="true"/>
+        <menuseparator id="startHistorySeparator"
+                       class="hide-if-empty-places-result"/>
       </menupopup>
     </menu>
+
 
     <menu id="bookmarksMenu"
           label="&bookmarksMenu.label;"
@@ -422,18 +473,21 @@
                  onpopupshowing="BookmarksMenu.onPopupShowing(event, '');
                                  BookmarksEventHandler.onPopupShowing(event);"
                  tooltip="bhTooltip" popupsinherittooltip="true">
+        <menuitem id="menu_bookmarkManager"
+                  command="Browser:ManageBookmark"
+                  key="manBookmarkKb"/>
+        <menuseparator id="organizeBookmarksSeparator"/>
+        <!--
         <menuitem id="menu_bookmarkThisPage"
                   command="Browser:AddBookmark"
                   key="addBookmarkKb"/>
+        -->
         <menuitem id="menu_bookmarkThisPageAs"
                   command="Browser:AddBookmarkAs"
                   key="addBookmarkAsKb"/>
         <menuitem id="menu_bookmarkAllTabs"
                   command="Browser:BookmarkAllTabs"/>
-        <menuitem id="menu_bookmarkManager"
-                  command="Browser:ManageBookmark"
-                  key="manBookmarkKb"/>
-        <menuseparator id="organizeBookmarksSeparator"/>
+        <menuseparator/>
         <menu id="menu_iconic_feedsMenu"
               label="&feedsMenu.label;"
               accesskey="&feedsMenu.accesskey;"
@@ -463,21 +517,12 @@
                      onpopupshowing="if (!this.parentNode._placesView)
                                        new PlacesMenu(event, 'place:folder=UNFILED_BOOKMARKS');"/>
         </menu>
-        <menuseparator/>
+        <menuseparator class="hide-if-empty-places-result"/>
       </menupopup>
     </menu>
 
     <menu id="tasksMenu">
       <menupopup id="taskPopup">
-        <menuitem id="menu_searchWeb"
-                  label="&searchInternetCmd.label;"
-                  accesskey="&searchInternetCmd.accesskey;"
-                  key="searchInternetKb"
-                  command="Browser:SearchInternet"/>
-        <menuitem id="menu_translate"
-                  label="&translateMenu.label;"
-                  accesskey="&translateMenu.accesskey;"
-                  oncommand="Translate();"/>
         <menu id="menu_cookieManager"
               label="&cookieCookieManager.label;"
               accesskey="&cookieCookieManager.accesskey;"
@@ -514,46 +559,14 @@
                       type="radio"
                       name="cookie"/>
             <menuseparator/>
+            <menuitem id="menuitem_cookiePermissions"
+                      label="Manage Cookie Permissions"
+                      oncommand="toPermissionsManager('cookie', hostUrl());
+                                 event.stopPropagation();"/>
             <menuitem id="menuitem_cookieDisplay"
                       label="&cookieDisplayCookiesCmd.label;"
                       accesskey="&cookieDisplayCookiesCmd.accesskey;"
-                      oncommand="toDataManager(hostUrl() + '|cookies');
-                                 event.stopPropagation();"/>
-          </menupopup>
-        </menu>
-        <menu id="menu_imageManager"
-              label="&cookieImageManager.label;"
-              accesskey="&cookieImageManager.accesskey;"
-              oncommand="if (event.target.id.startsWith('image_'))
-                           CookieImagePopupAction(event.target);">
-          <menupopup id="menupopup_checkPermissions_image"
-                     onpopupshowing="CheckPermissionsMenu('image', this);">
-            <menuitem id="image_deny"
-                      label="&cookieBlockImagesCmd.label;"
-                      accesskey="&cookieBlockImagesCmd.accesskey;"
-                      title="&cookieImageMessageTitle.label;"
-                      msg="&cookieBlockImagesMsg.label;"
-                      type="radio"
-                      name="image"/>
-            <menuitem id="image_default"
-                      label="&cookieImagesDefaultCmd.label;"
-                      accesskey="&cookieImagesDefaultCmd.accesskey;"
-                      title="&cookieImageMessageTitle.label;"
-                      msg="&cookieImagesDefaultMsg.label;"
-                      type="radio"
-                      name="image"/>
-            <menuitem id="image_allow"
-                      label="&cookieAllowImagesCmd.label;"
-                      accesskey="&cookieAllowImagesCmd.accesskey;"
-                      title="&cookieImageMessageTitle.label;"
-                      msg="&cookieAllowImagesMsg.label;"
-                      type="radio"
-                      name="image"/>
-            <menuseparator/>
-            <menuitem id="menuitem_imageDisplay"
-                      label="&cookieDisplayImagesCmd.label;"
-                      accesskey="&cookieDisplayImagesCmd.accesskey;"
-                      oncommand="toDataManager(hostUrl() + '|permissions|add|image');
+                      oncommand="toCookieManager();
                                  event.stopPropagation();"/>
           </menupopup>
         </menu>
@@ -590,16 +603,48 @@
             <menuitem id="menuitem_PopupsManage"
                       label="&popupsManage.label;"
                       accesskey="&popupsManage.accesskey;"
-                      oncommand="toDataManager(hostUrl() + '|permissions|add|popup');
+                      oncommand="toPermissionsManager('popup', hostUrl());
                                  event.stopPropagation();"
                       hidden="true"/>
           </menupopup>
         </menu>
+        <menu id="menu_imageManager"
+              label="&cookieImageManager.label;"
+              accesskey="&cookieImageManager.accesskey;"
+              oncommand="if (event.target.id.startsWith('image_'))
+                           CookieImagePopupAction(event.target);">
+          <menupopup id="menupopup_checkPermissions_image"
+                     onpopupshowing="CheckPermissionsMenu('image', this);">
+            <menuitem id="image_deny"
+                      label="&cookieBlockImagesCmd.label;"
+                      accesskey="&cookieBlockImagesCmd.accesskey;"
+                      title="&cookieImageMessageTitle.label;"
+                      msg="&cookieBlockImagesMsg.label;"
+                      type="radio"
+                      name="image"/>
+            <menuitem id="image_default"
+                      label="&cookieImagesDefaultCmd.label;"
+                      accesskey="&cookieImagesDefaultCmd.accesskey;"
+                      title="&cookieImageMessageTitle.label;"
+                      msg="&cookieImagesDefaultMsg.label;"
+                      type="radio"
+                      name="image"/>
+            <menuitem id="image_allow"
+                      label="&cookieAllowImagesCmd.label;"
+                      accesskey="&cookieAllowImagesCmd.accesskey;"
+                      title="&cookieImageMessageTitle.label;"
+                      msg="&cookieAllowImagesMsg.label;"
+                      type="radio"
+                      name="image"/>
+            <menuseparator/>
+            <menuitem id="menuitem_imageDisplay"
+                      label="&cookieDisplayImagesCmd.label;"
+                      accesskey="&cookieDisplayImagesCmd.accesskey;"
+                      oncommand="toPermissionsManager('image', hostUrl());
+                                 event.stopPropagation();"/>
+          </menupopup>
+        </menu>
         <menuseparator id="navBeginGlobalItems"/>
-        <menuitem id="sanitizeItem"
-                  label="&clearPrivateDataCmd.label;"
-                  accesskey="&clearPrivateDataCmd.accesskey;"
-                  key="key_sanitize" command="Tools:Sanitize"/>
       </menupopup>
     </menu>
 

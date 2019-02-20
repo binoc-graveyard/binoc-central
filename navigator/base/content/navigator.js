@@ -16,9 +16,6 @@ this.__defineSetter__("PluralForm", function (val) {
   return this.PluralForm = val;
 });
 
-XPCOMUtils.defineLazyModuleGetter(this, "SafeBrowsing",
-  "resource://gre/modules/SafeBrowsing.jsm");
-
 const REMOTESERVICE_CONTRACTID = "@mozilla.org/toolkit/remote-service;1";
 const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 var gURLBar = null;
@@ -508,23 +505,6 @@ function Startup()
              .getInterface(Components.interfaces.nsIXULWindow);
   xw.XULBrowserWindow = window.XULBrowserWindow = new nsBrowserStatusHandler();
 
-  if (!window.content.opener &&
-      Services.prefs.getBoolPref("browser.doorhanger.enabled")) {
-    var tmp = {};
-    Components.utils.import("resource://gre/modules/PopupNotifications.jsm", tmp);
-    window.PopupNotifications = new tmp.PopupNotifications(
-        getBrowser(),
-        document.getElementById("notification-popup"),
-        document.getElementById("notification-popup-box"));
-    // Setting the popup notification attribute causes the XBL to bind
-    // and call the constructor again, so we have to destroy it first.
-    gBrowser.getNotificationBox().destroy();
-    gBrowser.setAttribute("popupnotification", "true");
-    // The rebind also resets popup window scrollbar visibility, so override it.
-    if (!(xw.chromeFlags & Components.interfaces.nsIWebBrowserChrome.CHROME_SCROLLBARS))
-      gBrowser.selectedBrowser.style.overflow = "hidden";
-  }
-
   addPrefListener(gTabStripPrefListener);
   addPrefListener(gHomepagePrefListener);
   addPrefListener(gStatusBarPopupIconPrefListener);
@@ -690,9 +670,6 @@ function Startup()
   if (!gPrivate) {
     DownloadTaskbarProgress.onBrowserWindowLoad(window);
 
-    // initialize the sync UI
-    gSyncUI.init();
-
     // initialize the session-restore service
     setTimeout(InitSessionStoreCallback, 0);
   }
@@ -707,9 +684,6 @@ var gBrowserInit = {
 
 function DelayedStartup() {
   window.removeEventListener("MozAfterPaint", DelayedStartup);
-
-  // Bug 778855 - Perf regression if we do this here. To be addressed in bug 779008.
-  setTimeout(function() { SafeBrowsing.init(); }, 2000);
 
   gBrowserInit.delayedStartupFinished = true;
   Services.obs.notifyObservers(window, "browser-delayed-startup-finished", "");
@@ -1463,11 +1437,6 @@ function BrowserOpenTabFromTabBarMiddleClick(e)
   }
 }
 
-function BrowserOpenSyncTabs()
-{
-  switchToTabHavingURI("about:sync-tabs", true);
-}
-
 /* Show file picker dialog configured for opening a file, and return
  * the selected nsIFileURL instance. */
 function selectFileToOpen(label, prefRoot)
@@ -1528,10 +1497,8 @@ function updateCloseItems()
     closeItem.setAttribute("accesskey", gNavigatorBundle.getString("tabs.closeTab.accesskey"));
   }
 
-  var hideCloseOtherTabs = !browser || !browser.getStripVisibility();
+  var hideCloseOtherTabs = !browser || !browser.getStripVisibility() || hideCloseWindow;
   document.getElementById("menu_closeOtherTabs").hidden = hideCloseOtherTabs;
-  if (!hideCloseOtherTabs)
-    document.getElementById("cmd_closeOtherTabs").setAttribute("disabled", hideCloseWindow);
 }
 
 function updateRecentMenuItems()

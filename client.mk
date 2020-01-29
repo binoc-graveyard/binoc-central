@@ -112,6 +112,9 @@ MOZCONFIG_OUT_LINES := $(subst $(CR), ,$(subst $(NULL) $(NULL),||,$(MOZCONFIG_CO
 START_COMMENT = \#
 MOZCONFIG_OUT_FILTERED := $(filter-out $(START_COMMENT)%,$(MOZCONFIG_OUT_LINES))
 
+ifdef AUTOCLOBBER
+export AUTOCLOBBER=1
+endif
 ifdef MOZ_PGO
 export MOZ_PGO
 endif
@@ -329,6 +332,7 @@ $(CONFIGURES): %: %.in $(EXTRA_CONFIG_DEPS)
 
 CONFIG_STATUS_DEPS := \
 	$(wildcard $(CONFIGURES)) \
+	$(TOPSRCDIR)/platform/CLOBBER \
 	$(wildcard $(TOPSRCDIR)/platform/nsprpub/configure) \
 	$(wildcard $(TOPSRCDIR)/platform/config/milestone.txt) \
 	$(wildcard $(TOPSRCDIR)/platform/ldap/sdks/c-sdk/configure) \
@@ -348,9 +352,14 @@ else
   CONFIGURE = $(TOPSRCDIR)/configure
 endif
 
+$(OBJDIR)/CLOBBER: $(TOPSRCDIR)/platform/CLOBBER
+	$(PYTHON) $(TOPSRCDIR)/platform/config/pythonpath.py -I $(TOPSRCDIR)/platform/testing/mozbase/mozfile \
+			$(TOPSRCDIR)/platform/python/mozbuild/mozbuild/controller/clobber.py $(TOPSRCDIR)/platform $(OBJDIR)
+
 configure-files: $(CONFIGURES)
 
 configure-preqs = \
+  $(OBJDIR)/CLOBBER \
   configure-files \
   $(call mkdir_deps,$(OBJDIR)) \
   $(if $(MOZ_BUILD_PROJECTS),$(call mkdir_deps,$(MOZ_OBJDIR))) \

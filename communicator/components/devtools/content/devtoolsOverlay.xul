@@ -5,14 +5,14 @@
      file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 
 <!DOCTYPE overlay [
-<!ENTITY % overlayDTD SYSTEM "chrome://scratchpad/locale/overlay.dtd">
+<!ENTITY % overlayDTD SYSTEM "chrome://communicator/locale/devtools/devtoolsOverlay.dtd">
 %overlayDTD;
 ]>
 
-<overlay id="scratchpad-overlay"
+<overlay id="devtools-overlay"
          xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
     
-    <script type="application/javascript" src="chrome://scratchpad/content/overlay.js" />
+    <script type="application/javascript" src="chrome://communicator/content/devtools/devtoolsOverlay.js" />
      
     <menupopup id="devtoolsPopup">
       <menuitem id="cmd_scratchpad"

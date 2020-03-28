@@ -59,7 +59,6 @@
 @BINPATH@/uninstall/helper.exe
 #endif
 #ifdef MOZ_UPDATER
-@RESPATH@/update.locale
 @RESPATH@/updater.ini
 #endif
 
@@ -133,9 +132,7 @@
 @RESPATH@/update-settings.ini
 #endif
 #ifndef MOZ_SYSTEM_SQLITE
-#ifndef MOZ_FOLD_LIBS
 @BINPATH@/@DLL_PREFIX@mozsqlite3@DLL_SUFFIX@
-#endif
 #endif
 @BINPATH@/@DLL_PREFIX@lgpllibs@DLL_SUFFIX@
 #ifdef MOZ_FFVPX

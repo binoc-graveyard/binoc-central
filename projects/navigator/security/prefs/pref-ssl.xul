@@ -69,25 +69,13 @@
                   label="&limit.tls12.label;"
                   accesskey="&limit.tls12.accesskey;"
                   oncommand="UpdateSslPrefs();"/>
+        <checkbox id="allowTLS13"
+                  class="nogray-disabled"
+                  label="&limit.tls13.label;"
+                  accesskey="&limit.tls13.accesskey;"
+                  oncommand="UpdateSslPrefs();"/>
       </hbox>
 
-    </groupbox>
-
-    <groupbox align="start">
-      <caption label="&SSLTLSWarnings.caption;"/>
-      <description>&warn.description2;</description>
-      <checkbox id="warnEnteringSecure"
-                label="&warn.enteringsecure;"
-                accesskey="&warn.enteringsecure.accesskey;"
-                preference="security.warn_entering_secure"/>
-      <checkbox id="warnLeavingSecure"
-                label="&warn.leavingsecure;"
-                accesskey="&warn.leavingsecure.accesskey;"
-                preference="security.warn_leaving_secure"/>
-      <checkbox id="warnInsecurePost"
-                label="&warn.insecurepost;"
-                accesskey="&warn.insecurepost.accesskey;"
-                preference="security.warn_submit_insecure"/>
     </groupbox>
 
     <groupbox align="start">

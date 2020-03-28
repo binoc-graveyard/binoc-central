@@ -5,5 +5,5 @@
 
 DIRS += ['classic']
 
-if CONFIG['MOZ_OFFICIAL_BRANDING']:
+if CONFIG['MOZ_OFFICIAL_BRANDING'] or MOZ_BRANDING_DIRECTORY.endswith('unstable'):
   DIRS += ['modern']

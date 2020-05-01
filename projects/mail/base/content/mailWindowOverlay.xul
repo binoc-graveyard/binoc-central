@@ -2930,6 +2930,8 @@
       <menuitem id="menu_mac_hide_others" label="&hideOtherAppsCmdMac.label;" key="key_hideOtherAppsCmdMac"/>
       <menuitem id="menu_mac_show_all" label="&showAllAppsCmdMac.label;"/>
 #endif
+     <menuseparator id="sep_switchprofile"/>
+     <menuitem id="cmd_switchprofile" label="&switchProfileCmd.label;" accesskey="&switchProfileCmd.accesskey;" oncommand="toProfileManager();"/>
      </menupopup>
     </menu>
 
@@ -2944,9 +2946,6 @@
     <spacer id="menubar_spacer" flex="100%"/>
     </menubar>
   </toolbaritem>
-#ifdef CAN_DRAW_IN_TITLEBAR
-  <hbox class="titlebar-placeholder" type="caption-buttons" ordinal="1000"/>
-#endif
 </toolbar>
 
 <toolbarpalette id="MailToolbarPalette">

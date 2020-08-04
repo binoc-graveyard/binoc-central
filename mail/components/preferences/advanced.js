@@ -38,35 +38,7 @@ var gAdvancedPane = {
 
     if (AppConstants.MOZ_CRASHREPORTER)
       this.initSubmitCrashes();
-    this.initTelemetry();
     this.updateActualCacheSize();
-
-    // Search integration -- check whether we should hide or disable integration
-    let hideSearchUI = false;
-    let disableSearchUI = false;
-    Components.utils.import("resource:///modules/SearchIntegration.js");
-    if (SearchIntegration)
-    {
-      if (SearchIntegration.osVersionTooLow)
-        hideSearchUI = true;
-      else if (SearchIntegration.osComponentsNotRunning)
-        disableSearchUI = true;
-    }
-    else
-    {
-      hideSearchUI = true;
-    }
-
-    if (hideSearchUI)
-    {
-      document.getElementById("searchIntegrationContainer").hidden = true;
-    }
-    else if (disableSearchUI)
-    {
-      let searchCheckbox = document.getElementById("searchIntegration");
-      searchCheckbox.checked = false;
-      document.getElementById("searchintegration.enable").disabled = true;
-    }
 
     // If the shell service is not working, disable the "Check now" button
     // and "perform check at startup" checkbox.
@@ -475,17 +447,5 @@ updateWritePrefs: function ()
                getService(Components.interfaces.nsICrashReporter);
       cr.submitReports = checkbox.checked;
     } catch (e) { }
-  },
-
-
-  /**
-   * The preference/checkbox is configured in XUL.
-   *
-   * In all cases, set up the Learn More link sanely
-   */
-  initTelemetry: function ()
-  {
-    if (AppConstants.MOZ_TELEMETRY_REPORTING)
-      this._setupLearnMoreLink("toolkit.telemetry.infoURL", "telemetryLearnMore");
   },
 };

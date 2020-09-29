@@ -12,7 +12,6 @@ libs::
 	$(MAKE) -C installer/windows uninstaller
 endif
 
-
 # As a fallout from bug 1247162, the sourcestamp in application.ini and
 # platform.ini are the same, which isn't a problem for Firefox, but
 # it's not right for anything else. So we correct platform.ini here.

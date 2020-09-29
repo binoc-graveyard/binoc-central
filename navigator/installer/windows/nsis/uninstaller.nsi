@@ -2,12 +2,11 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-# Also requires:
+# Required Plugins:
 # AppAssocReg http://nsis.sourceforge.net/Application_Association_Registration_plug-in
-# CityHash    http://mxr.mozilla.org/mozilla-central/source/other-licenses/nsis/Contrib/CityHash
+# CityHash    http://dxr.mozilla.org/mozilla-central/source/other-licenses/nsis/Contrib/CityHash
 # ShellLink   http://nsis.sourceforge.net/ShellLink_plug-in
 # UAC         http://nsis.sourceforge.net/UAC_plug-in
-
 
 ; Set verbosity to 3 (e.g. no script) to lessen the noise in the build logs
 !verbose 3
@@ -30,10 +29,18 @@ RequestExecutionLevel user
 
 !addplugindir ./
 
+; On Vista and above attempt to elevate Standard Users in addition to users that
+; are a member of the Administrators group.
+!define NONADMIN_ELEVATE
+
 ; prevents compiling of the reg write logging.
 !define NO_LOG
 
+!define MaintUninstallKey \
+ "Software\Microsoft\Windows\CurrentVersion\Uninstall\MozillaMaintenanceService"
+
 Var TmpVal
+Var MaintCertKey
 
 ; Other included files may depend upon these includes!
 ; The following includes are provided by NSIS.
@@ -45,11 +52,8 @@ Var TmpVal
 !include WordFunc.nsh
 
 !insertmacro GetSize
-!insertmacro GetOptions
-!insertmacro GetParameters
-!insertmacro GetParent
 !insertmacro StrFilter
-!insertmacro WordFind
+!insertmacro WordReplace
 
 !insertmacro un.GetParent
 
@@ -64,25 +68,25 @@ Var TmpVal
 VIAddVersionKey "FileDescription" "${BrandShortName} Helper"
 VIAddVersionKey "OriginalFilename" "helper.exe"
 
-; Most commonly used macros for managing shortcuts
-!insertmacro _LoggingShortcutsCommon
-
-!insertmacro AddDDEHandlerValues
-!insertmacro AddHandlerValues
-!insertmacro CheckIfRegistryKeyExists
-!insertmacro CleanUpdateDirectories
+!insertmacro AddDisabledDDEHandlerValues
 !insertmacro CleanVirtualStore
-!insertmacro FindSMProgramsDir
+!insertmacro ElevateUAC
 !insertmacro GetLongPath
 !insertmacro GetPathFromString
 !insertmacro InitHashAppModelId
 !insertmacro IsHandlerForInstallDir
+!insertmacro IsPinnedToTaskBar
+!insertmacro LogDesktopShortcut
+!insertmacro LogQuickLaunchShortcut
+!insertmacro LogStartMenuShortcut
+!insertmacro PinnedToStartMenuLnkCount
+!insertmacro RegCleanAppHandler
 !insertmacro RegCleanMain
 !insertmacro RegCleanUninstall
+!insertmacro SetAppLSPCategories
 !insertmacro SetBrandNameVars
-!insertmacro UnloadUAC
 !insertmacro UpdateShortcutAppModelIDs
-!insertmacro WordReplace
+!insertmacro UnloadUAC
 !insertmacro WriteRegDWORD2
 !insertmacro WriteRegStr2
 
@@ -95,13 +99,14 @@ VIAddVersionKey "OriginalFilename" "helper.exe"
 !insertmacro un.GetSecondInstallPath
 !insertmacro un.InitHashAppModelId
 !insertmacro un.ManualCloseAppPrompt
-!insertmacro un.ParseUninstallLog
 !insertmacro un.RegCleanAppHandler
 !insertmacro un.RegCleanFileHandler
 !insertmacro un.RegCleanMain
-!insertmacro un.RegCleanProtocolHandler
 !insertmacro un.RegCleanUninstall
+!insertmacro un.RegCleanProtocolHandler
 !insertmacro un.RemoveQuotesFromPath
+!insertmacro un.RemovePrecompleteEntries
+!insertmacro un.SetAppLSPCategories
 !insertmacro un.SetBrandNameVars
 
 !include shared.nsh
@@ -148,21 +153,13 @@ ShowUnInstDetails nevershow
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.leaveWelcome
 !insertmacro MUI_UNPAGE_WELCOME
 
-; Uninstall Confirm Page
-UninstPage custom un.preConfirm un.leaveConfirm
+; Custom Uninstall Confirm Page
+UninstPage custom un.preConfirm
 
 ; Remove Files Page
 !insertmacro MUI_UNPAGE_INSTFILES
 
-; Don't setup the survey controls, functions, etc. when the application has
-; defined NO_UNINSTALL_SURVEY
-!ifndef NO_UNINSTALL_SURVEY
-!define MUI_PAGE_CUSTOMFUNCTION_PRE un.preFinish
-!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
-!define MUI_FINISHPAGE_SHOWREADME ""
-!define MUI_FINISHPAGE_SHOWREADME_TEXT $(SURVEY_TEXT)
-!define MUI_FINISHPAGE_SHOWREADME_FUNCTION un.Survey
-!endif
+; Finish Page
 
 !insertmacro MUI_UNPAGE_FINISH
 
@@ -195,13 +192,13 @@ Section "Uninstall"
     ClearErrors
   ${EndIf}
 
+  ; setup the application model id registration value
+  ${un.InitHashAppModelId} "$INSTDIR" "Software\Binary Outcast\${AppName}\TaskBarIDs"
+
   SetShellVarContext current  ; Set SHCTX to HKCU
   ${un.RegCleanMain} "Software\Mozilla"
   ${un.RegCleanUninstall}
   ${un.DeleteShortcuts}
-
-  ; setup the application model id registration value
-  ${un.InitHashAppModelId} "$INSTDIR" "Software\Mozilla\${AppName}\TaskBarIDs"
 
   ; Unregister resources associated with Win7 taskbar jump lists.
   ${If} ${AtLeastWin7}
@@ -213,8 +210,8 @@ Section "Uninstall"
   ${un.CleanUpdateDirectories} "Mozilla\Borealis" "Mozilla\updates"
 
   ; Remove any app model id's stored in the registry for this install path
-  DeleteRegValue HKCU "Software\Mozilla\${AppName}\TaskBarIDs" "$INSTDIR"
-  DeleteRegValue HKLM "Software\Mozilla\${AppName}\TaskBarIDs" "$INSTDIR"
+  DeleteRegValue HKCU "Software\Binary Outcast\${AppName}\TaskBarIDs" "$INSTDIR"
+  DeleteRegValue HKLM "Software\Binary Outcast\${AppName}\TaskBarIDs" "$INSTDIR"
 
   ClearErrors
   WriteRegStr HKLM "Software\Mozilla" "${BrandShortName}InstallerTest" "Write Test"
@@ -227,40 +224,29 @@ Section "Uninstall"
     ${un.RegCleanMain} "Software\Mozilla"
     ${un.RegCleanUninstall}
     ${un.DeleteShortcuts}
+    ${un.SetAppLSPCategories}
   ${EndIf}
 
   ${un.RegCleanAppHandler} "BorealisURL"
   ${un.RegCleanAppHandler} "BorealisHTML"
-  ${un.RegCleanAppHandler} "BorealisMAIL"
-  ${un.RegCleanAppHandler} "BorealisNEWS"
-  ${un.RegCleanAppHandler} "BorealisEML"
+  ${un.RegCleanProtocolHandler} "ftp"
   ${un.RegCleanProtocolHandler} "http"
   ${un.RegCleanProtocolHandler} "https"
-  ${un.RegCleanProtocolHandler} "ftp"
-  ${un.RegCleanProtocolHandler} "mailto"
-  ${un.RegCleanProtocolHandler} "news"
-  ${un.RegCleanProtocolHandler} "nntp"
-  ${un.RegCleanProtocolHandler} "snews"
-
-  ClearErrors
-  ReadRegStr $R9 HKCR "BorealisEML" ""
-  ; Don't clean up the file handlers if the BorealisEML key still exists since
-  ; there could be a second installation that may be the default file handler
-  ${If} ${Errors}
-    ${un.RegCleanFileHandler}  ".eml"   "BorealisEML"
-  ${EndIf}
 
   ClearErrors
   ReadRegStr $R9 HKCR "BorealisHTML" ""
   ; Don't clean up the file handlers if the BorealisHTML key still exists since
-  ; there could be a second installation that may be the default file handler
+  ; there should be a second installation that may be the default file handler
   ${If} ${Errors}
     ${un.RegCleanFileHandler}  ".htm"   "BorealisHTML"
     ${un.RegCleanFileHandler}  ".html"  "BorealisHTML"
     ${un.RegCleanFileHandler}  ".shtml" "BorealisHTML"
-    ${un.RegCleanFileHandler}  ".webm"  "BorealisHTML"
     ${un.RegCleanFileHandler}  ".xht"   "BorealisHTML"
     ${un.RegCleanFileHandler}  ".xhtml" "BorealisHTML"
+    ${un.RegCleanFileHandler}  ".oga"  "BorealisHTML"
+    ${un.RegCleanFileHandler}  ".ogg"  "BorealisHTML"
+    ${un.RegCleanFileHandler}  ".ogv"  "BorealisHTML"
+    ${un.RegCleanFileHandler}  ".webm"  "BorealisHTML"
   ${EndIf}
 
   SetShellVarContext all  ; Set SHCTX to HKLM
@@ -287,24 +273,20 @@ Section "Uninstall"
     DeleteRegValue HKLM "Software\RegisteredApplications" "${AppRegName}"
   ${EndIf}
 
-  StrCpy $0 "Software\Clients\Mail\${BrandFullNameInternal}\shell\open\command"
-  ReadRegStr $R1 HKLM "$0" ""
+  ReadRegStr $R1 HKCU "$0" ""
   ${un.RemoveQuotesFromPath} "$R1" $R1
   ${un.GetParent} "$R1" $R1
 
-  ; Only remove the Clients\Mail and Clients\News key if it refers to this
-  ; install location. The Clients\Mail & Clients\News keys are independent
-  ; of the default app for the OS settings. The XPInstall base un-installer
-  ; always removes these keys if it is uninstalling the default app and it
-  ; will always replace the keys when installing even if there is another
-  ; install of Borealis that is set as the default app. Now the keys are always
-  ; updated on install but are only removed if they refer to this install
-  ; location.
+  ; Only remove the StartMenuInternet key if it refers to this install location.
+  ; The StartMenuInternet registry key is independent of the default browser
+  ; settings. The XPInstall base un-installer always removes this key if it is
+  ; uninstalling the default browser and it will always replace the keys when
+  ; installing even if there is another install of Borealis that is set as the
+  ; default browser. Now the key is always updated on install but it is only
+  ; removed if it refers to this install location.
   ${If} "$INSTDIR" == "$R1"
-    DeleteRegKey HKLM "Software\Clients\Mail\${BrandFullNameInternal}"
-    DeleteRegKey HKLM "Software\Clients\News\${BrandFullNameInternal}"
-    DeleteRegValue HKLM "Software\RegisteredApplications" "${AppRegNameMail}"
-    DeleteRegValue HKLM "Software\RegisteredApplications" "${AppRegNameNews}"
+    DeleteRegKey HKCU "Software\Clients\StartMenuInternet\${FileMainEXE}"
+    DeleteRegValue HKCU "Software\RegisteredApplications" "${AppRegName}"
   ${EndIf}
 
   StrCpy $0 "Software\Microsoft\Windows\CurrentVersion\App Paths\${FileMainEXE}"
@@ -315,6 +297,9 @@ Section "Uninstall"
     DeleteRegKey HKLM "$0"
     DeleteRegKey HKCU "$0"
     StrCpy $0 "Software\Microsoft\MediaPlayer\ShimInclusionList\plugin-container.exe"
+    DeleteRegKey HKLM "$0"
+    DeleteRegKey HKCU "$0"
+    StrCpy $0 "Software\Classes\MIME\Database\Content Type\application/x-xpinstall;app=Borealis"
     DeleteRegKey HKLM "$0"
     DeleteRegKey HKCU "$0"
   ${Else}
@@ -333,69 +318,92 @@ Section "Uninstall"
   ${If} ${FileExists} "$INSTDIR\updates"
     RmDir /r /REBOOTOK "$INSTDIR\updates"
   ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\updated"
+    RmDir /r /REBOOTOK "$INSTDIR\updated"
+  ${EndIf}
   ${If} ${FileExists} "$INSTDIR\defaults\shortcuts"
     RmDir /r /REBOOTOK "$INSTDIR\defaults\shortcuts"
   ${EndIf}
   ${If} ${FileExists} "$INSTDIR\distribution"
     RmDir /r /REBOOTOK "$INSTDIR\distribution"
   ${EndIf}
-  ${If} ${FileExists} "$INSTDIR\removed-files"
-    Delete /REBOOTOK "$INSTDIR\removed-files"
-  ${EndIf}
-
-  ; Application update won't add these files to the uninstall log so delete
-  ; them if they still exist.
-  ${If} ${FileExists} "$INSTDIR\MapiProxy_InUse.dll"
-    Delete /REBOOTOK "$INSTDIR\MapiProxy_InUse.dll"
-  ${EndIf}
-  ${If} ${FileExists} "$INSTDIR\mozMapi32_InUse.dll"
-    Delete /REBOOTOK "$INSTDIR\mozMapi32_InUse.dll"
-  ${EndIf}
 
   ; Remove files that may be left behind by the application in the
   ; VirtualStore directory.
   ${un.CleanVirtualStore}
 
-  ; Parse the uninstall log to unregister dll's and remove all installed
-  ; files / directories this install is responsible for.
-  ${un.ParseUninstallLog}
+  ; Only unregister the dll if the registration points to this installation
+  ReadRegStr $R1 HKCR "CLSID\{0D68D6D0-D93D-4D08-A30D-F00DD1F45B24}\InProcServer32" ""
+  ${If} "$INSTDIR\AccessibleMarshal.dll" == "$R1"
+    ${UnregisterDLL} "$INSTDIR\AccessibleMarshal.dll"
+  ${EndIf}
 
-  ; Remove the uninstall directory that we control
-  RmDir /r /REBOOTOK "$INSTDIR\uninstall"
+  ${un.RemovePrecompleteEntries} "false"
+
+  ${If} ${FileExists} "$INSTDIR\defaults\pref\channel-prefs.js"
+    Delete /REBOOTOK "$INSTDIR\defaults\pref\channel-prefs.js"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\defaults\pref"
+    RmDir /REBOOTOK "$INSTDIR\defaults\pref"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\defaults"
+    RmDir /REBOOTOK "$INSTDIR\defaults"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\uninstall"
+    ; Remove the uninstall directory that we control
+    RmDir /r /REBOOTOK "$INSTDIR\uninstall"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\install.log"
+    Delete /REBOOTOK "$INSTDIR\install.log"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\update-settings.ini"
+    Delete /REBOOTOK "$INSTDIR\update-settings.ini"
+  ${EndIf}
+
+  ; Explicitly remove empty webapprt dir in case it exists (bug 757978).
+  RmDir "$INSTDIR\webapprt\components"
+  RmDir "$INSTDIR\webapprt"
 
   ; Remove the installation directory if it is empty
-  ${RemoveDir} "$INSTDIR"
+  RmDir "$INSTDIR"
 
   ; If Borealis.exe was successfully deleted yet we still need to restart to
   ; remove other files create a dummy Borealis.exe.moz-delete to prevent the
   ; installer from allowing an install without restart when it is required
   ; to complete an uninstall.
   ${If} ${RebootFlag}
-    ${Unless} ${FileExists} "$INSTDIR\${FileMainEXE}.moz-delete"
-      FileOpen $0 "$INSTDIR\${FileMainEXE}.moz-delete" w
-      FileWrite $0 "Will be deleted on restart"
-      Delete /REBOOTOK "$INSTDIR\${FileMainEXE}.moz-delete"
-      FileClose $0
-    ${EndUnless}
+    ; Admin is required to delete files on reboot so only add the moz-delete if
+    ; the user is an admin. After calling UAC::IsAdmin $0 will equal 1 if the
+    ; user is an admin.
+    UAC::IsAdmin
+    ${If} "$0" == "1"
+      ${Unless} ${FileExists} "$INSTDIR\${FileMainEXE}.moz-delete"
+        FileOpen $0 "$INSTDIR\${FileMainEXE}.moz-delete" w
+        FileWrite $0 "Will be deleted on restart"
+        Delete /REBOOTOK "$INSTDIR\${FileMainEXE}.moz-delete"
+        FileClose $0
+      ${EndUnless}
+    ${EndIf}
   ${EndIf}
-
 
   ; Refresh desktop icons otherwise the start menu internet item won't be
   ; removed and other ugly things will happen like recreation of the app's
   ; clients registry key by the OS under some conditions.
-  System::Call "shell32::SHChangeNotify(i, i, i, i) v (0x08000000, 0, 0, 0)"
+  System::Call "shell32::SHChangeNotify(i ${SHCNE_ASSOCCHANGED}, i 0, i 0, i 0)"
+
+  ; Users who uninstall then reinstall expecting Borealis to use a clean profile
+  ; may be surprised during first-run. This key is checked during startup of Borealis and
+  ; subsequently deleted after checking. If the value is found during startup
+  ; the browser will offer to Reset Borealis. We use the UpdateChannel to match
+  ; uninstalls of Borealis-release with reinstalls of Borealis-release, for example.
+  WriteRegStr HKCU "Software\Binary Outcast\Borealis" "Uninstalled-${UpdateChannel}" "True"
+
+  ${un.IsFirewallSvcRunning}
+  Pop $0
+  ${If} "$0" == "true"
+    liteFirewallW::RemoveRule "$INSTDIR\${FileMainEXE}" "${BrandShortName} ($INSTDIR)"
+  ${EndIf}
 SectionEnd
-
-################################################################################
-# Helper Functions
-
-; Don't setup the survey controls, functions, etc. when the application has
-; defined NO_UNINSTALL_SURVEY
-!ifndef NO_UNINSTALL_SURVEY
-Function un.Survey
-  Exec "$\"$TmpVal$\" $\"${SurveyURL}$\""
-FunctionEnd
-!endif
 
 ################################################################################
 # Language
@@ -425,6 +433,8 @@ Function un.leaveWelcome
   ${If} ${FileExists} "$INSTDIR\${FileMainEXE}"
     Banner::show /NOUNLOAD "$(BANNER_CHECK_EXISTING)"
 
+    ; If the message window has been found previously give the app an additional
+    ; five seconds to close.
     ${If} "$TmpVal" == "FoundMessageWindow"
       Sleep 5000
     ${EndIf}
@@ -435,9 +445,14 @@ Function un.leaveWelcome
 
     Banner::destroy
 
+    ; If there are files in use $TmpVal will be "true"
     ${If} "$TmpVal" == "true"
+      ; If the message window is found the call to ManualCloseAppPrompt will
+      ; abort leaving the value of $TmpVal set to "FoundMessageWindow".
       StrCpy $TmpVal "FoundMessageWindow"
       ${un.ManualCloseAppPrompt} "${WindowClass}" "$(WARN_MANUALLY_CLOSE_APP_UNINSTALL)"
+      ; If the message window is not found set $TmpVal to "true" so the restart
+      ; required message is displayed.
       StrCpy $TmpVal "true"
     ${EndIf}
   ${EndIf}
@@ -451,6 +466,7 @@ Function un.preConfirm
     ${un.ChangeMUIHeaderImage} "$PLUGINSDIR\modern-header.bmp"
   ${EndIf}
 
+  ; Setup the unconfirm.ini file for the Custom Uninstall Confirm Page
   WriteINIStr "$PLUGINSDIR\unconfirm.ini" "Settings" NumFields "3"
 
   WriteINIStr "$PLUGINSDIR\unconfirm.ini" "Field 1" Type   "label"
@@ -500,65 +516,34 @@ Function un.preConfirm
   !insertmacro MUI_INSTALLOPTIONS_SHOW
 FunctionEnd
 
-Function un.leaveConfirm
-  ; Try to delete the app executable and if we can't delete it try to find the
-  ; app's message window and prompt the user to close the app. This allows
-  ; running an instance that is located in another directory. If for whatever
-  ; reason there is no message window we will just rename the app's files and
-  ; then remove them on restart if they are in use.
-  ClearErrors
-  ${DeleteFile} "$INSTDIR\${FileMainEXE}"
-  ${If} ${Errors}
-    ${un.ManualCloseAppPrompt} "${WindowClass}" "$(WARN_MANUALLY_CLOSE_APP_UNINSTALL)"
-  ${EndIf}
-FunctionEnd
-
-!ifndef NO_UNINSTALL_SURVEY
-Function un.preFinish
-  ; Do not modify the finish page if there is a reboot pending
-  ${Unless} ${RebootFlag}
-    ; Setup the survey controls, functions, etc.
-    StrCpy $TmpVal "SOFTWARE\Microsoft\IE Setup\Setup"
-    ClearErrors
-    ReadRegStr $0 HKLM $TmpVal "Path"
-    ${If} ${Errors}
-      !insertmacro MUI_INSTALLOPTIONS_WRITE "ioSpecial.ini" "settings" "NumFields" "3"
-    ${Else}
-      ExpandEnvStrings $0 "$0" ; this value will usually contain %programfiles%
-      ${If} $0 != "\"
-        StrCpy $0 "$0\"
-      ${EndIf}
-      StrCpy $0 "$0\iexplore.exe"
-      ClearErrors
-      GetFullPathName $TmpVal $0
-      ${If} ${Errors}
-        !insertmacro MUI_INSTALLOPTIONS_WRITE "ioSpecial.ini" "settings" "NumFields" "3"
-      ${Else}
-        ; When we add an optional action to the finish page the cancel button
-        ; is enabled. This disables it and leaves the finish button as the
-        ; only choice.
-        !insertmacro MUI_INSTALLOPTIONS_WRITE "ioSpecial.ini" "settings" "cancelenabled" "0"
-      ${EndIf}
-    ${EndIf}
-  ${EndUnless}
-FunctionEnd
-!endif
-
 ################################################################################
 # Initialization Functions
 
 Function .onInit
+  ; Remove the current exe directory from the search order.
+  ; This only effects LoadLibrary calls and not implicitly loaded DLLs.
+  System::Call 'kernel32::SetDllDirectoryW(w "")'
+
   ; We need this set up for most of the helper.exe operations.
-  !ifdef AppName
-  ${InitHashAppModelId} "$INSTDIR" "Software\Mozilla\${AppName}\TaskBarIDs"
-  !endif
   ${UninstallOnInitCommon}
 FunctionEnd
 
 Function un.onInit
+  ; Remove the current exe directory from the search order.
+  ; This only effects LoadLibrary calls and not implicitly loaded DLLs.
+  System::Call 'kernel32::SetDllDirectoryW(w "")'
+
   StrCpy $LANGUAGE 0
 
   ${un.UninstallUnOnInitCommon}
+
+; The commands inside this ifndef are needed prior to NSIS 3.0a2 and can be
+; removed after we require NSIS 3.0a2 or greater.
+!ifndef NSIS_PACKEDVERSION
+  ${If} ${AtLeastWinVista}
+    System::Call 'user32::SetProcessDPIAware()'
+  ${EndIf}
+!endif
 
   !insertmacro InitInstallOptionsFile "unconfirm.ini"
 FunctionEnd
@@ -570,4 +555,3 @@ FunctionEnd
 Function un.onGUIEnd
   ${un.OnEndCommon}
 FunctionEnd
-

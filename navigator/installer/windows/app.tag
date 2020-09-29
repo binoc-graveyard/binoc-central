@@ -1,4 +1,4 @@
 ;!@Install@!UTF-8!
-Title="Borealis"
+Title="Setup"
 RunProgram="setup.exe"
 ;!@InstallEnd@!

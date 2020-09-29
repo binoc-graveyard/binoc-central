@@ -29,6 +29,9 @@ XPCOMUtils.defineLazyGetter(this, "PageMenuParent", function() {
   return new tmp.PageMenuParent();
 });
 
+XPCOMUtils.defineLazyModuleGetter(this, "ShellService",
+                                  "resource:///modules/ShellService.jsm");
+
 function nsContextMenu(aXulMenu, aIsShift, aEvent) {
   this.shouldDisplay = true;
   this.initMenu(aXulMenu, aIsShift, aEvent);
@@ -225,24 +228,18 @@ nsContextMenu.prototype = {
                     this.onCanvas || this.onVideo || this.onAudio));
     // Set Desktop Background depends on whether an image was clicked on,
     // and requires the shell service.
-    var canSetDesktopBackground = false;
-    if ("@mozilla.org/suite/shell-service;1" in Components.classes) try {
-      canSetDesktopBackground =
-          Components.classes["@mozilla.org/suite/shell-service;1"]
-                    .getService(Components.interfaces.nsIShellService)
-                    .canSetDesktopBackground;
-    } catch (e) {
-    }
+    var canSetDesktopBackground = ShellService.canSetDesktopBackground;
     this.showItem("context-setDesktopBackground",
                   canSetDesktopBackground && (this.onLoadedImage || this.onStandaloneImage));
 
     this.showItem("context-sep-image",
                   this.onLoadedImage && !this.onStandaloneImage);
 
-    if (canSetDesktopBackground && this.onLoadedImage)
+    if (canSetDesktopBackground && this.onLoadedImage) {
       // Disable the Set Desktop Background menu item if we're still trying to load the image
       this.setItemAttr("context-setDesktopBackground", "disabled",
                        (("complete" in this.target) && !this.target.complete) ? "true" : null);
+    }
 
     this.showItem("context-fitimage", this.onStandaloneImage &&
                                       content.document.imageResizingEnabled);
@@ -951,8 +948,27 @@ nsContextMenu.prototype = {
   },
 
   setDesktopBackground: function() {
-    openDialog("chrome://communicator/content/setDesktopBackground.xul",
-               "_blank", "chrome,modal,titlebar,centerscreen", this.target);
+    const kDesktopBackgroundURL = "chrome://navigator/content/setDesktopBackground.xul";
+#ifdef XP_MACOSX
+    // On Mac, the Set Desktop Background window is not modal.
+    // Don't open more than one Set Desktop Background window.
+    var wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
+                       .getService(Components.interfaces.nsIWindowMediator);
+    var dbWin = wm.getMostRecentWindow("Shell:SetDesktopBackground");
+    if (dbWin) {
+      dbWin.gSetBackground.init(this.target);
+      dbWin.focus();
+    } else {
+      openDialog(kDesktopBackgroundURL, "",
+                 "centerscreen,chrome,dialog=no,dependent,resizable=no",
+                 this.target);
+    }
+#else
+    // On non-Mac platforms, the Set Wallpaper dialog is modal.
+    openDialog(kDesktopBackgroundURL, "",
+               "centerscreen,chrome,dialog,modal,dependent",
+               this.target);
+#endif
   },
 
   // Save URL of clicked-on frame.

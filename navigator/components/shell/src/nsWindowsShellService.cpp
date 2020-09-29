@@ -3,40 +3,53 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsWindowsShellService.h"
+
 #include "imgIContainer.h"
 #include "imgIRequest.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/RefPtr.h"
+#include "nsIDOMElement.h"
 #include "nsIDOMHTMLImageElement.h"
 #include "nsIImageLoadingContent.h"
 #include "nsIPrefService.h"
 #include "nsIPrefLocalizedString.h"
-#include "nsWindowsShellService.h"
-#include "nsIProcess.h"
-#include "windows.h"
-#include "nsIFile.h"
-#include "nsNetUtil.h"
-#include "nsNativeCharsetUtils.h"
-#include "nsUnicharUtils.h"
-#include "nsIStringBundle.h"
 #include "nsIServiceManager.h"
+#include "nsIStringBundle.h"
+#include "nsNetUtil.h"
 #include "nsServiceManagerUtils.h"
+#include "nsIProcess.h"
+#include "nsICategoryManager.h"
+#include "nsDirectoryServiceUtils.h"
 #include "nsAppDirectoryServiceDefs.h"
 #include "nsDirectoryServiceDefs.h"
-#include "nsDirectoryServiceUtils.h"
 #include "nsIWindowsRegKey.h"
+#include "nsUnicharUtils.h"
 #include "nsIWinTaskbar.h"
 #include "nsISupportsPrimitives.h"
+#include "nsIURLFormatter.h"
+#include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
-#include <mbstring.h>
-#include "mozilla/Services.h"
+#include "mozilla/WindowsVersion.h"
+
+#include "windows.h"
+#include "shellapi.h"
 
 #ifdef _WIN32_WINNT
 #undef _WIN32_WINNT
 #endif
 #define _WIN32_WINNT 0x0600
 #define INITGUID
+#undef NTDDI_VERSION
+#define NTDDI_VERSION NTDDI_WIN8
+// Needed for access to IApplicationActivationManager
 #include <shlobj.h>
+
+#include <mbstring.h>
+#include <shlwapi.h>
+
+#include <lm.h>
+#undef ACCESS_READ
 
 #ifndef MAX_BUF
 #define MAX_BUF 4096
@@ -50,18 +63,21 @@
 
 #define NS_TASKBAR_CONTRACTID "@mozilla.org/windows-taskbar;1"
 
+using mozilla::IsWin8OrLater;
 using namespace mozilla;
 using namespace mozilla::gfx;
 
 NS_IMPL_ISUPPORTS(nsWindowsShellService, nsIWindowsShellService, nsIShellService)
 
 static nsresult
-OpenKeyForReading(HKEY aKeyRoot, const wchar_t* aKeyName, HKEY* aKey)
+OpenKeyForReading(HKEY aKeyRoot, const nsAString& aKeyName, HKEY* aKey)
 {
-  DWORD res = ::RegOpenKeyExW(aKeyRoot, aKeyName, 0, KEY_READ, aKey);
+  const nsString &flatName = PromiseFlatString(aKeyName);
+
+  DWORD res = ::RegOpenKeyExW(aKeyRoot, flatName.get(), 0, KEY_READ, aKey);
   switch (res) {
   case ERROR_SUCCESS:
-   break;
+    break;
   case ERROR_ACCESS_DENIED:
     return NS_ERROR_FILE_ACCESS_DENIED;
   case ERROR_FILE_NOT_FOUND:
@@ -72,37 +88,34 @@ OpenKeyForReading(HKEY aKeyRoot, const wchar_t* aKeyName, HKEY* aKey)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Default SeaMonkey OS integration Registry Settings
-// Note: Some settings only exist when using the installer!
-//       The setting of SeaMonkey as default application is made by a helper
-//       application since writing those values may require elevation.
+// Default Browser Registry Settings
 //
-// Default Browser settings:
+// The setting of these values are made by an external binary since writing
+// these values may require elevation.
+//
 // - File Extension Mappings
 //   -----------------------
 //   The following file extensions:
-//    .htm .html .shtml .xht .xhtml
+//    .htm .html .shtml .xht .xhtml 
 //   are mapped like so:
 //
-//   HKCU\SOFTWARE\Classes\.<ext>\      (default)         REG_SZ   SeaMonkeyHTML
+//   HKCU\SOFTWARE\Classes\.<ext>\      (default)         REG_SZ     BorealisHTML
 //
 //   as aliases to the class:
 //
-//   HKCU\SOFTWARE\Classes\SeaMonkeyHTML\
-//     DefaultIcon                      (default)         REG_SZ     <appfolder>\chrome\icons\default\html-file.ico
-//     shell\open\command               (default)         REG_SZ     <apppath> -url "%1"
+//   HKCU\SOFTWARE\Classes\BorealisHTML\
+//     DefaultIcon                      (default)         REG_SZ     <apppath>,1
+//     shell\open\command               (default)         REG_SZ     <apppath> -osint -url "%1"
+//     shell\open\ddeexec               (default)         REG_SZ     <empty string>
 //
-// - Windows Vista Protocol Handler
+// - Windows Vista and above Protocol Handler
 //
-//   HKCU\SOFTWARE\Classes\SeaMonkeyURL\(default)         REG_SZ     <appname> URL
+//   HKCU\SOFTWARE\Classes\BorealisURL\  (default)         REG_SZ     <appname> URL
 //                                      EditFlags         REG_DWORD  2
 //                                      FriendlyTypeName  REG_SZ     <appname> URL
 //     DefaultIcon                      (default)         REG_SZ     <apppath>,1
-//     shell\open\command               (default)         REG_SZ     <apppath> -requestPending -osint -url "%1"
-//     shell\open\ddeexec               (default)         REG_SZ     "%1",,0,0,,,,
-//     shell\open\ddeexec               NoActivateHandler REG_SZ
-//                       \Application   (default)         REG_SZ     SeaMonkey
-//                       \Topic         (default)         REG_SZ     WWW_OpenURL
+//     shell\open\command               (default)         REG_SZ     <apppath> -osint -url "%1"
+//     shell\open\ddeexec               (default)         REG_SZ     <empty string>
 //
 // - Protocol Mappings
 //   -----------------
@@ -111,19 +124,16 @@ OpenKeyForReading(HKEY aKeyRoot, const wchar_t* aKeyName, HKEY* aKey)
 //   are mapped like so:
 //
 //   HKCU\SOFTWARE\Classes\<protocol>\
-//     DefaultIcon                      (default)         REG_SZ     <apppath>,0
-//     shell\open\command               (default)         REG_SZ     <apppath> -requestPending -osint -url "%1"
-//     shell\open\ddeexec               (default)         REG_SZ     "%1",,0,0,,,,
-//     shell\open\ddeexec               NoActivateHandler REG_SZ
-//                       \Application   (default)         REG_SZ     SeaMonkey
-//                       \Topic         (default)         REG_SZ     WWW_OpenURL
+//     DefaultIcon                      (default)         REG_SZ     <apppath>,1
+//     shell\open\command               (default)         REG_SZ     <apppath> -osint -url "%1"
+//     shell\open\ddeexec               (default)         REG_SZ     <empty string>
 //
-// - Windows Start Menu (Win2K SP2, XP SP1, and newer)
+// - Windows Start Menu (XP SP1 and newer)
 //   -------------------------------------------------
-//   The following keys are set to make SeaMonkey appear in the Start Menu as the
+//   The following keys are set to make Borealis appear in the Start Menu as the
 //   browser:
-//
-//   HKCU\SOFTWARE\Clients\StartMenuInternet\SEAMONKEY.EXE\
+//   
+//   HKCU\SOFTWARE\Clients\StartMenuInternet\Borealis.EXE\
 //                                      (default)         REG_SZ     <appname>
 //     DefaultIcon                      (default)         REG_SZ     <apppath>,0
 //     InstallInfo                      HideIconsCommand  REG_SZ     <uninstpath> /HideShortcuts
@@ -131,182 +141,78 @@ OpenKeyForReading(HKEY aKeyRoot, const wchar_t* aKeyName, HKEY* aKey)
 //     InstallInfo                      ReinstallCommand  REG_SZ     <uninstpath> /SetAsDefaultAppGlobal
 //     InstallInfo                      ShowIconsCommand  REG_SZ     <uninstpath> /ShowShortcuts
 //     shell\open\command               (default)         REG_SZ     <apppath>
-//     shell\properties                 (default)         REG_SZ     <appname> &Preferences
+//     shell\properties                 (default)         REG_SZ     <appname> &Options
 //     shell\properties\command         (default)         REG_SZ     <apppath> -preferences
 //     shell\safemode                   (default)         REG_SZ     <appname> &Safe Mode
 //     shell\safemode\command           (default)         REG_SZ     <apppath> -safe-mode
 //
-//
-//
-// Default Mail&News settings
-//
-// - File Extension Mappings
-//   -----------------------
-//   The following file extension:
-//    .eml
-//   is mapped like this:
-//
-//   HKCU\SOFTWARE\Classes\.eml         (default)         REG_SZ    SeaMonkeyEML
-//
-//   That aliases to this class:
-//   HKCU\SOFTWARE\Classes\SeaMonkeyEML\ (default)        REG_SZ    SeaMonkey (Mail) Document
-//                                      FriendlyTypeName  REG_SZ    SeaMonkey (Mail) Document
-//     DefaultIcon                      (default)         REG_SZ    <appfolder>\chrome\icons\default\misc-file.ico
-//     shell\open\command               (default)         REG_SZ    <apppath> "%1"
-//
-// - Windows Vista Protocol Handler
-//
-//   HKCU\SOFTWARE\Classes\SeaMonkeyCOMPOSE (default)     REG_SZ    SeaMonkey (Mail) URL
-//                                       DefaultIcon      REG_SZ    <apppath>,0
-//                                       EditFlags        REG_DWORD 2
-//     shell\open\command                (default)        REG_SZ    <apppath> -osint -compose "%1"
-//
-//   HKCU\SOFTWARE\Classes\SeaMonkeyNEWS (default)        REG_SZ    SeaMonkey (News) URL
-//                                       DefaultIcon      REG_SZ    <apppath>,0
-//                                       EditFlags        REG_DWORD 2
-//     shell\open\command                (default)        REG_SZ    <apppath> -osint -news "%1"
-//
-//
-// - Protocol Mappings
-//   -----------------
-//   The following protocol:
-//    mailto
-//   is mapped like this:
-//
-//   HKCU\SOFTWARE\Classes\mailto\       (default)       REG_SZ     SeaMonkey (Mail) URL
-//                                       EditFlags       REG_DWORD  2
-//                                       URL Protocol    REG_SZ
-//    DefaultIcon                        (default)       REG_SZ     <apppath>,0
-//    shell\open\command                 (default)       REG_SZ     <apppath> -osint -compose "%1"
-//
-//   The following protocols:
-//    news,nntp,snews
-//   are mapped like this:
-//
-//   HKCU\SOFTWARE\Classes\<protocol>\   (default)       REG_SZ     SeaMonkey (News) URL
-//                                       EditFlags       REG_DWORD  2
-//                                       URL Protocol    REG_SZ
-//    DefaultIcon                        (default)       REG_SZ     <appath>,0
-//    shell\open\command                 (default)       REG_SZ     <appath> -osint -news "%1"
-//
-// - Windows Start Menu (Win2K SP2, XP SP1, and newer)
-//   -------------------------------------------------
-//   The following keys are set to make SeaMonkey appear in the Start Menu as
-//   the default mail program:
-//
-//   HKCU\SOFTWARE\Clients\Mail\SeaMonkey
-//                                   (default)           REG_SZ     <appname>
-//                                   DLLPath             REG_SZ     <appfolder>\mozMapi32.dll
-//    DefaultIcon                    (default)           REG_SZ     <apppath>,0
-//    InstallInfo                    HideIconsCommand    REG_SZ     <uninstpath> /HideShortcuts
-//    InstallInfo                    ReinstallCommand    REG_SZ     <uninstpath> /SetAsDefaultAppGlobal
-//    InstallInfo                    ShowIconsCommand    REG_SZ     <uninstpath> /ShowShortcuts
-//    shell\open\command             (default)           REG_SZ     <apppath> -mail
-//    shell\properties               (default)           REG_SZ     <appname> &Preferences
-//    shell\properties\command       (default)           REG_SZ     <apppath> -preferences
-//
-//   Also set SeaMonkey as News reader (Usenet), though Windows does currently
-//   not expose a default news reader to UI. Applications like Outlook Express
-//   also add themselves to this registry key
-//
-//   HKCU\SOFTWARE\Clients\News\SeaMonkey
-//                                   (default)           REG_SZ     <appname>
-//                                   DLLPath             REG_SZ     <appfolder>\mozMapi32.dll
-//    DefaultIcon                    (default)           REG_SZ     <apppath>,0
-//    shell\open\command             (default)           REG_SZ     <apppath> -news
-//
-///////////////////////////////////////////////////////////////////////////////
 
-
-typedef enum {
-  NO_SUBSTITUTION           = 0x00,
-  APP_PATH_SUBSTITUTION     = 0x01
-} SettingFlags;
+// The values checked are all default values so the value name is not needed.
+typedef struct {
+  const char* keyName;
+  const char* valueData;
+  const char* oldValueData;
+} SETTING;
 
 #define APP_REG_NAME L"Borealis"
-// APP_REG_NAME_MAIL and APP_REG_NAME_NEWS should be kept in synch with
-// AppRegNameMail and AppRegNameNews in the installer file: defines.nsi.in
-#define APP_REG_NAME_MAIL L"Borealis (Mail)"
-#define APP_REG_NAME_NEWS L"Borealis (News)"
-#define CLS_HTML "BorealisHTML"
-#define CLS_URL "BorealisURL"
-#define CLS_EML "BorealisEML"
-#define CLS_MAILTOURL "BorealisCOMPOSE"
-#define CLS_NEWSURL "BorealisNEWS"
-#define CLS_FEEDURL "BorealisFEED"
-#define SMI "SOFTWARE\\Clients\\StartMenuInternet\\"
+#define VAL_FILE_ICON "%APPPATH%,1"
+#define VAL_OPEN "\"%APPPATH%\" -osint -url \"%1\""
+#define OLD_VAL_OPEN "\"%APPPATH%\" -requestPending -osint -url \"%1\""
 #define DI "\\DefaultIcon"
-#define II "\\InstallInfo"
-#define SOP "\\shell\\open\\command"
-
-#define VAL_ICON "%APPPATH%,0"
-#define VAL_HTML_OPEN "\"%APPPATH%\" -url \"%1\""
-#define VAL_URL_OPEN "\"%APPPATH%\" -requestPending -osint -url \"%1\""
-#define VAL_MAIL_OPEN "\"%APPPATH%\" \"%1\""
+#define SOC "\\shell\\open\\command"
+#define SOD "\\shell\\open\\ddeexec"
+// Used for updating the FTP protocol handler's shell open command under HKCU.
+#define FTP_SOC L"Software\\Classes\\ftp\\shell\\open\\command"
 
 #define MAKE_KEY_NAME1(PREFIX, MID) \
   PREFIX MID
 
-// The DefaultIcon registry key value should never be used (e.g. NON_ESSENTIAL)
-// when checking if SeaMonkey is the default browser since other applications
+// The DefaultIcon registry key value should never be used when checking if
+// Borealis is the default browser for file handlers since other applications
 // (e.g. MS Office) may modify the DefaultIcon registry key value to add Icon
-// Handlers.
-// see http://msdn2.microsoft.com/en-us/library/aa969357.aspx for more info.
-static SETTING gBrowserSettings[] = {
-  // File Extension Class - as of 1.8.1.2 the value for VAL_URL_OPEN is also
-  // checked for CLS_HTML since SeaMonkey should also own opening local files
-  // when set as the default browser.
-  { MAKE_KEY_NAME1(CLS_HTML, SOP), "", VAL_HTML_OPEN, APP_PATH_SUBSTITUTION },
+// Handlers. see http://msdn2.microsoft.com/en-us/library/aa969357.aspx for
+// more info. The FTP protocol is not checked so advanced users can set the FTP
+// handler to another application and still have Borealis check if it is the
+// default HTTP and HTTPS handler.
+// *** Do not add additional checks here unless you skip them when aForAllTypes
+// is false below***.
+static SETTING gSettings[] = {
+  // File Handler Class
+  // ***keep this as the first entry because when aForAllTypes is not set below
+  // it will skip over this check.***
+  { MAKE_KEY_NAME1("BorealisHTML", SOC), VAL_OPEN, OLD_VAL_OPEN },
 
   // Protocol Handler Class - for Vista and above
-  { MAKE_KEY_NAME1(CLS_URL, SOP), "", VAL_URL_OPEN, APP_PATH_SUBSTITUTION },
+  { MAKE_KEY_NAME1("BorealisURL", SOC), VAL_OPEN, OLD_VAL_OPEN },
 
   // Protocol Handlers
-  { MAKE_KEY_NAME1("HTTP", DI),    "", VAL_ICON, APP_PATH_SUBSTITUTION },
-  { MAKE_KEY_NAME1("HTTP", SOP),   "", VAL_URL_OPEN, APP_PATH_SUBSTITUTION },
-  { MAKE_KEY_NAME1("HTTPS", DI),   "", VAL_ICON, APP_PATH_SUBSTITUTION },
-  { MAKE_KEY_NAME1("HTTPS", SOP),  "", VAL_URL_OPEN, APP_PATH_SUBSTITUTION }
-
-  // These values must be set by hand, since they contain localized strings.
-  //   seamonkey.exe\shell\properties   (default)   REG_SZ  SeaMonkey &Preferences
-  //   seamonkey.exe\shell\safemode     (default)   REG_SZ  SeaMonkey &Safe Mode
+  { MAKE_KEY_NAME1("HTTP", DI), VAL_FILE_ICON },
+  { MAKE_KEY_NAME1("HTTP", SOC), VAL_OPEN, OLD_VAL_OPEN },
+  { MAKE_KEY_NAME1("HTTPS", DI), VAL_FILE_ICON },
+  { MAKE_KEY_NAME1("HTTPS", SOC), VAL_OPEN, OLD_VAL_OPEN }
 };
 
- static SETTING gMailSettings[] = {
-   // File Extension Aliases
-   { ".eml", "", CLS_EML, NO_SUBSTITUTION },
-   // File Extension Class
-   { MAKE_KEY_NAME1(CLS_EML, SOP), "",  VAL_MAIL_OPEN, APP_PATH_SUBSTITUTION},
+// The settings to disable DDE are separate from the default browser settings
+// since they are only checked when Borealis is the default browser and if they
+// are incorrect they are fixed without notifying the user.
+static SETTING gDDESettings[] = {
+  // File Handler Class
+  { MAKE_KEY_NAME1("Software\\Classes\\BorealisHTML", SOD) },
 
-   // Protocol Handler Class - for Vista and above
-   { MAKE_KEY_NAME1(CLS_MAILTOURL, SOP), "", "\"%APPPATH%\" -osint -compose \"%1\"", APP_PATH_SUBSTITUTION },
+  // Protocol Handler Class - for Vista and above
+  { MAKE_KEY_NAME1("Software\\Classes\\BorealisURL", SOD) },
 
-   // Protocol Handlers
-   { MAKE_KEY_NAME1("mailto", SOP), "", "\"%APPPATH%\" -osint -compose \"%1\"", APP_PATH_SUBSTITUTION }
- };
-
- static SETTING gNewsSettings[] = {
-    // Protocol Handler Class - for Vista and above
-   { MAKE_KEY_NAME1(CLS_NEWSURL, SOP), "", "\"%APPPATH%\" -osint -mail \"%1\"",  APP_PATH_SUBSTITUTION },
-
-   // Protocol Handlers
-   { MAKE_KEY_NAME1("news", SOP), "", "\"%APPPATH%\" -osint -mail \"%1\"", APP_PATH_SUBSTITUTION },
-   { MAKE_KEY_NAME1("nntp", SOP), "", "\"%APPPATH%\" -osint -mail \"%1\"", APP_PATH_SUBSTITUTION },
-};
-
- static SETTING gFeedSettings[] = {
-   // Protocol Handler Class - for Vista and above
-   { MAKE_KEY_NAME1(CLS_FEEDURL, SOP), "", "\"%APPPATH%\" -osint -mail \"%1\"", APP_PATH_SUBSTITUTION },
-
-   // Protocol Handlers
-   { MAKE_KEY_NAME1("feed", SOP), "", "\"%APPPATH%\" -osint -mail \"%1\"", APP_PATH_SUBSTITUTION },
+  // Protocol Handlers
+  { MAKE_KEY_NAME1("Software\\Classes\\FTP", SOD) },
+  { MAKE_KEY_NAME1("Software\\Classes\\HTTP", SOD) },
+  { MAKE_KEY_NAME1("Software\\Classes\\HTTPS", SOD) }
 };
 
 nsresult
-GetHelperPath(nsString& aPath)
+GetHelperPath(nsAutoString& aPath)
 {
   nsresult rv;
-  nsCOMPtr<nsIProperties> directoryService =
+  nsCOMPtr<nsIProperties> directoryService = 
     do_GetService(NS_DIRECTORY_SERVICE_CONTRACTID, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -324,23 +230,21 @@ GetHelperPath(nsString& aPath)
 
   rv = appHelper->GetPath(aPath);
 
-  aPath.Insert('"', 0);
-  aPath.Append('"');
-
+  aPath.Insert(L'"', 0);
+  aPath.Append(L'"');
   return rv;
 }
 
 nsresult
-LaunchHelper(const nsString& aPath)
+LaunchHelper(nsAutoString& aPath)
 {
   STARTUPINFOW si = {sizeof(si), 0};
   PROCESS_INFORMATION pi = {0};
 
-  BOOL ok = CreateProcessW(nullptr, (LPWSTR)aPath.get(), nullptr, nullptr,
-                           FALSE, 0, nullptr, nullptr, &si, &pi);
-
-  if (!ok)
+  if (!CreateProcessW(nullptr, (LPWSTR)aPath.get(), nullptr, nullptr, FALSE,
+                      0, nullptr, nullptr, &si, &pi)) {
     return NS_ERROR_FAILURE;
+  }
 
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
@@ -351,6 +255,9 @@ NS_IMETHODIMP
 nsWindowsShellService::ShortcutMaintenance()
 {
   nsresult rv;
+
+  // XXX App ids were updated to a constant install path hash,
+  // XXX this code can be removed after a few upgrade cycles.
 
   // Launch helper.exe so it can update the application user model ids on
   // shortcuts in the user's taskbar and start menu. This keeps older pinned
@@ -375,37 +282,33 @@ nsWindowsShellService::ShortcutMaintenance()
     return NS_ERROR_UNEXPECTED;
 
   NS_NAMED_LITERAL_CSTRING(prefName, "browser.taskbar.lastgroupid");
-  nsCOMPtr<nsIPrefService> prefs =
+  nsCOMPtr<nsIPrefBranch> prefs =
     do_GetService(NS_PREFSERVICE_CONTRACTID);
   if (!prefs)
     return NS_ERROR_UNEXPECTED;
 
-  nsCOMPtr<nsIPrefBranch> prefBranch;
-  prefs->GetBranch(nullptr, getter_AddRefs(prefBranch));
-  if (!prefBranch)
-    return NS_ERROR_UNEXPECTED;
-
   nsCOMPtr<nsISupportsString> prefString;
-  rv = prefBranch->GetComplexValue(prefName.get(),
-                                   NS_GET_IID(nsISupportsString),
-                                   getter_AddRefs(prefString));
+  rv = prefs->GetComplexValue(prefName.get(),
+                              NS_GET_IID(nsISupportsString),
+                              getter_AddRefs(prefString));
   if (NS_SUCCEEDED(rv)) {
     nsAutoString version;
     prefString->GetData(version);
-    if (version.Equals(appId)) {
+    if (!version.IsEmpty() && version.Equals(appId)) {
       // We're all good, get out of here.
       return NS_OK;
     }
   }
   // Update the version in prefs
-  prefString = do_CreateInstance(NS_SUPPORTS_STRING_CONTRACTID, &rv);
+  prefString =
+    do_CreateInstance(NS_SUPPORTS_STRING_CONTRACTID, &rv);
   if (NS_FAILED(rv))
     return rv;
 
   prefString->SetData(appId);
-  rv = prefBranch->SetComplexValue(prefName.get(),
-                                   NS_GET_IID(nsISupportsString),
-                                   prefString);
+  rv = prefs->SetComplexValue(prefName.get(),
+                              NS_GET_IID(nsISupportsString),
+                              prefString);
   if (NS_FAILED(rv)) {
     NS_WARNING("Couldn't set last user model id!");
     return NS_ERROR_UNEXPECTED;
@@ -420,227 +323,540 @@ nsWindowsShellService::ShortcutMaintenance()
   return LaunchHelper(appHelperPath);
 }
 
-/* helper routine. Iterate over the passed in settings object,
-   testing each key to see if we are handling it.
+static bool
+IsAARDefault(const RefPtr<IApplicationAssociationRegistration>& pAAR,
+             LPCWSTR aClassName)
+{
+  // Make sure the Prog ID matches what we have
+  LPWSTR registeredApp;
+  bool isProtocol = *aClassName != L'.';
+  ASSOCIATIONTYPE queryType = isProtocol ? AT_URLPROTOCOL : AT_FILEEXTENSION;
+  HRESULT hr = pAAR->QueryCurrentDefault(aClassName, queryType, AL_EFFECTIVE,
+                                         &registeredApp);
+  if (FAILED(hr)) {
+    return false;
+  }
+
+  LPCWSTR progID = isProtocol ? L"BorealisURL" : L"BorealisHTML";
+  bool isDefault = !wcsicmp(registeredApp, progID);
+  CoTaskMemFree(registeredApp);
+
+  return isDefault;
+}
+
+static void
+IsDefaultBrowserWin8(bool aCheckAllTypes, bool* aIsDefaultBrowser)
+{
+  RefPtr<IApplicationAssociationRegistration> pAAR;
+  HRESULT hr = CoCreateInstance(CLSID_ApplicationAssociationRegistration,
+                                nullptr,
+                                CLSCTX_INPROC,
+                                IID_IApplicationAssociationRegistration,
+                                getter_AddRefs(pAAR));
+  if (FAILED(hr)) {
+    return;
+  }
+
+  bool res = IsAARDefault(pAAR, L"http");
+  if (*aIsDefaultBrowser) {
+    *aIsDefaultBrowser = res;
+  }
+  res = IsAARDefault(pAAR, L".html");
+  if (*aIsDefaultBrowser && aCheckAllTypes) {
+    *aIsDefaultBrowser = res;
+  }
+}
+
+/*
+ * Query's the AAR for the default status.
+ * This only checks for BorealisURL and if aCheckAllTypes is set, then
+ * it also checks for BorealisHTML.  Note that those ProgIDs are shared
+ * by all Borealis browsers.
 */
 bool
-nsWindowsShellService::TestForDefault(SETTING aSettings[], int32_t aSize)
+nsWindowsShellService::IsDefaultBrowserVista(bool aCheckAllTypes,
+                                             bool* aIsDefaultBrowser)
 {
-  wchar_t currValue[MAX_BUF];
-  SETTING* end = aSettings + aSize;
-  for (SETTING * settings = aSettings; settings < end; ++settings) {
-    NS_ConvertUTF8toUTF16 dataLongPath(settings->valueData);
-    NS_ConvertUTF8toUTF16 dataShortPath(settings->valueData);
-    NS_ConvertUTF8toUTF16 key(settings->keyName);
-    NS_ConvertUTF8toUTF16 value(settings->valueName);
-    if (settings->flags & APP_PATH_SUBSTITUTION) {
-      int32_t offset = dataLongPath.Find("%APPPATH%");
-      dataLongPath.Replace(offset, 9, mAppLongPath);
-      // Remove the quotes around %APPPATH% in VAL_OPEN for short paths
-      int32_t offsetQuoted = dataShortPath.Find("\"%APPPATH%\"");
-      if (offsetQuoted != -1)
-        dataShortPath.Replace(offsetQuoted, 11, mAppShortPath);
-      else
-        dataShortPath.Replace(offset, 9, mAppShortPath);
-    }
+  RefPtr<IApplicationAssociationRegistration> pAAR;
+  HRESULT hr = CoCreateInstance(CLSID_ApplicationAssociationRegistration,
+                                nullptr,
+                                CLSCTX_INPROC,
+                                IID_IApplicationAssociationRegistration,
+                                getter_AddRefs(pAAR));
+  if (FAILED(hr)) {
+    return false;
+  }
 
-    ::ZeroMemory(currValue, sizeof(currValue));
-    HKEY theKey;
-    nsresult rv = OpenKeyForReading(HKEY_CLASSES_ROOT, key.get(), &theKey);
-    if (NS_FAILED(rv))
-      // Key does not exist
-      return false;
-
-    DWORD len = sizeof currValue;
-    DWORD res = ::RegQueryValueExW(theKey, value.get(),
-                                   nullptr, nullptr, (LPBYTE)currValue, &len);
-    // Close the key we opened.
-    ::RegCloseKey(theKey);
-    if (REG_FAILED(res) ||
-        _wcsicmp(dataLongPath.get(), currValue) &&
-        _wcsicmp(dataShortPath.get(), currValue)) {
-      // Key wasn't set, or was set to something else (something else became the default client)
-      return false;
-    }
+  if (aCheckAllTypes) {
+    BOOL res;
+    hr = pAAR->QueryAppIsDefaultAll(AL_EFFECTIVE,
+                                    APP_REG_NAME,
+                                    &res);
+    *aIsDefaultBrowser = res;
+  } else if (!IsWin8OrLater()) {
+    *aIsDefaultBrowser = IsAARDefault(pAAR, L"http");
   }
 
   return true;
 }
 
-nsresult nsWindowsShellService::Init()
+NS_IMETHODIMP
+nsWindowsShellService::IsDefaultBrowser(bool aStartupCheck,
+                                        bool aForAllTypes,
+                                        bool* aIsDefaultBrowser)
 {
-  wchar_t appPath[MAX_BUF];
-  if (!::GetModuleFileNameW(0, appPath, MAX_BUF))
+  // Assume we're the default unless one of the several checks below tell us
+  // otherwise.
+  *aIsDefaultBrowser = true;
+
+  wchar_t exePath[MAX_BUF];
+  if (!::GetModuleFileNameW(0, exePath, MAX_BUF))
     return NS_ERROR_FAILURE;
 
-  mAppLongPath.Assign(appPath);
-
-  // Support short path to the exe so if it is already set the user is not
-  // prompted to set the default mail client again.
-  if (!::GetShortPathNameW(appPath, appPath, MAX_BUF))
+  // Convert the path to a long path since GetModuleFileNameW returns the path
+  // that was used to launch Borealis which is not necessarily a long path.
+  if (!::GetLongPathNameW(exePath, exePath, MAX_BUF))
     return NS_ERROR_FAILURE;
 
-  mAppShortPath.Assign(appPath);
+  nsAutoString appLongPath(exePath);
+
+  HKEY theKey;
+  DWORD res;
+  nsresult rv;
+  wchar_t currValue[MAX_BUF];
+
+  SETTING* settings = gSettings;
+  if (!aForAllTypes && IsWin8OrLater()) {
+    // Skip over the file handler check
+    settings++;
+  }
+
+  SETTING* end = gSettings + sizeof(gSettings) / sizeof(SETTING);
+
+  for (; settings < end; ++settings) {
+    NS_ConvertUTF8toUTF16 keyName(settings->keyName);
+    NS_ConvertUTF8toUTF16 valueData(settings->valueData);
+    int32_t offset = valueData.Find("%APPPATH%");
+    valueData.Replace(offset, 9, appLongPath);
+
+    rv = OpenKeyForReading(HKEY_CLASSES_ROOT, keyName, &theKey);
+    if (NS_FAILED(rv)) {
+      *aIsDefaultBrowser = false;
+      return NS_OK;
+    }
+
+    ::ZeroMemory(currValue, sizeof(currValue));
+    DWORD len = sizeof currValue;
+    res = ::RegQueryValueExW(theKey, L"", nullptr, nullptr,
+                             (LPBYTE)currValue, &len);
+    // Close the key that was opened.
+    ::RegCloseKey(theKey);
+    if (REG_FAILED(res) ||
+        _wcsicmp(valueData.get(), currValue)) {
+      // Key wasn't set or was set to something other than our registry entry.
+      NS_ConvertUTF8toUTF16 oldValueData(settings->oldValueData);
+      offset = oldValueData.Find("%APPPATH%");
+      oldValueData.Replace(offset, 9, appLongPath);
+      // The current registry value doesn't match the current or the old format.
+      if (_wcsicmp(oldValueData.get(), currValue)) {
+        *aIsDefaultBrowser = false;
+        return NS_OK;
+      }
+
+      res = ::RegOpenKeyExW(HKEY_CLASSES_ROOT, PromiseFlatString(keyName).get(),
+                            0, KEY_SET_VALUE, &theKey);
+      if (REG_FAILED(res)) {
+        // If updating the open command fails try to update it using the helper
+        // application when setting Borealis as the default browser.
+        *aIsDefaultBrowser = false;
+        return NS_OK;
+      }
+
+      const nsString &flatValue = PromiseFlatString(valueData);
+      res = ::RegSetValueExW(theKey, L"", 0, REG_SZ,
+                             (const BYTE *) flatValue.get(),
+                             (flatValue.Length() + 1) * sizeof(char16_t));
+      // Close the key that was created.
+      ::RegCloseKey(theKey);
+      if (REG_FAILED(res)) {
+        // If updating the open command fails try to update it using the helper
+        // application when setting Borealis as the default browser.
+        *aIsDefaultBrowser = false;
+        return NS_OK;
+      }
+    }
+  }
+
+  // Only check if Borealis is the default browser on Vista and above if the
+  // previous checks show that Borealis is the default browser.
+  if (*aIsDefaultBrowser) {
+    IsDefaultBrowserVista(aForAllTypes, aIsDefaultBrowser);
+    if (IsWin8OrLater()) {
+      IsDefaultBrowserWin8(aForAllTypes, aIsDefaultBrowser);
+    }
+  }
+
+  // To handle the case where DDE isn't disabled due for a user because there
+  // account didn't perform a Borealis update this will check if Borealis is the
+  // default browser and if dde is disabled for each handler
+  // and if it isn't disable it. When Borealis is not the default browser the
+  // helper application will disable dde for each handler.
+  if (*aIsDefaultBrowser && aForAllTypes) {
+    // Check ftp settings
+
+    end = gDDESettings + sizeof(gDDESettings) / sizeof(SETTING);
+
+    for (settings = gDDESettings; settings < end; ++settings) {
+      NS_ConvertUTF8toUTF16 keyName(settings->keyName);
+
+      rv = OpenKeyForReading(HKEY_CURRENT_USER, keyName, &theKey);
+      if (NS_FAILED(rv)) {
+        ::RegCloseKey(theKey);
+        // If disabling DDE fails try to disable it using the helper
+        // application when setting Borealis as the default browser.
+        *aIsDefaultBrowser = false;
+        return NS_OK;
+      }
+
+      ::ZeroMemory(currValue, sizeof(currValue));
+      DWORD len = sizeof currValue;
+      res = ::RegQueryValueExW(theKey, L"", nullptr, nullptr,
+                               (LPBYTE)currValue, &len);
+      // Close the key that was opened.
+      ::RegCloseKey(theKey);
+      if (REG_FAILED(res) || char16_t('\0') != *currValue) {
+        // Key wasn't set or was set to something other than our registry entry.
+        // Delete the key along with all of its childrean and then recreate it.
+        const nsString &flatName = PromiseFlatString(keyName);
+        ::SHDeleteKeyW(HKEY_CURRENT_USER, flatName.get());
+        res = ::RegCreateKeyExW(HKEY_CURRENT_USER, flatName.get(), 0, nullptr,
+                                REG_OPTION_NON_VOLATILE, KEY_SET_VALUE,
+                                nullptr, &theKey, nullptr);
+        if (REG_FAILED(res)) {
+          // If disabling DDE fails try to disable it using the helper
+          // application when setting Borealis as the default browser.
+          *aIsDefaultBrowser = false;
+          return NS_OK;
+        }
+
+        res = ::RegSetValueExW(theKey, L"", 0, REG_SZ, (const BYTE *) L"",
+                               sizeof(char16_t));
+        // Close the key that was created.
+        ::RegCloseKey(theKey);
+        if (REG_FAILED(res)) {
+          // If disabling DDE fails try to disable it using the helper
+          // application when setting Borealis as the default browser.
+          *aIsDefaultBrowser = false;
+          return NS_OK;
+        }
+      }
+    }
+
+    // Update the FTP protocol handler's shell open command if it is the old
+    // format.
+    res = ::RegOpenKeyExW(HKEY_CURRENT_USER, FTP_SOC, 0, KEY_ALL_ACCESS,
+                          &theKey);
+    // Don't update the FTP protocol handler's shell open command when opening
+    // its registry key fails under HKCU since it most likely doesn't exist.
+    if (NS_FAILED(rv)) {
+      return NS_OK;
+    }
+
+    NS_ConvertUTF8toUTF16 oldValueOpen(OLD_VAL_OPEN);
+    int32_t offset = oldValueOpen.Find("%APPPATH%");
+    oldValueOpen.Replace(offset, 9, appLongPath);
+
+    ::ZeroMemory(currValue, sizeof(currValue));
+    DWORD len = sizeof currValue;
+    res = ::RegQueryValueExW(theKey, L"", nullptr, nullptr, (LPBYTE)currValue,
+                             &len);
+
+    // Don't update the FTP protocol handler's shell open command when the
+    // current registry value doesn't exist or matches the old format.
+    if (REG_FAILED(res) ||
+        _wcsicmp(oldValueOpen.get(), currValue)) {
+      ::RegCloseKey(theKey);
+      return NS_OK;
+    }
+
+    NS_ConvertUTF8toUTF16 valueData(VAL_OPEN);
+    valueData.Replace(offset, 9, appLongPath);
+    const nsString &flatValue = PromiseFlatString(valueData);
+    res = ::RegSetValueExW(theKey, L"", 0, REG_SZ,
+                           (const BYTE *) flatValue.get(),
+                           (flatValue.Length() + 1) * sizeof(char16_t));
+    // Close the key that was created.
+    ::RegCloseKey(theKey);
+    // If updating the FTP protocol handlers shell open command fails try to
+    // update it using the helper application when setting Borealis as the
+    // default browser.
+    if (REG_FAILED(res)) {
+      *aIsDefaultBrowser = false;
+    }
+  }
 
   return NS_OK;
 }
 
-bool
-nsWindowsShellService::IsDefaultClientVista(uint16_t aApps, bool* aIsDefaultClient)
+static nsresult
+DynSHOpenWithDialog(HWND hwndParent, const OPENASINFO *poainfo)
 {
-  IApplicationAssociationRegistration* pAAR;
+  // shell32.dll is in the knownDLLs list so will always be loaded from the
+  // system32 directory.
+  static const wchar_t kSehllLibraryName[] =  L"shell32.dll";
+  HMODULE shellDLL = ::LoadLibraryW(kSehllLibraryName);
+  if (!shellDLL) {
+    return NS_ERROR_FAILURE;
+  }
 
-  HRESULT hr = CoCreateInstance(CLSID_ApplicationAssociationRegistration,
-                                nullptr,
+  decltype(SHOpenWithDialog)* SHOpenWithDialogFn =
+    (decltype(SHOpenWithDialog)*) GetProcAddress(shellDLL, "SHOpenWithDialog");
+
+  if (!SHOpenWithDialogFn) {
+    return NS_ERROR_FAILURE;
+  }
+
+  nsresult rv;
+  HRESULT hr = SHOpenWithDialogFn(hwndParent, poainfo);
+  if (SUCCEEDED(hr) || (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED))) {
+    rv = NS_OK;
+  } else {
+    rv = NS_ERROR_FAILURE;
+  }
+  FreeLibrary(shellDLL);
+  return rv;
+}
+
+nsresult
+nsWindowsShellService::LaunchControlPanelDefaultsSelectionUI()
+{
+  IApplicationAssociationRegistrationUI* pAARUI;
+  HRESULT hr = CoCreateInstance(CLSID_ApplicationAssociationRegistrationUI,
+                                NULL,
                                 CLSCTX_INPROC,
-                                IID_IApplicationAssociationRegistration,
-                                (void**)&pAAR);
-
+                                IID_IApplicationAssociationRegistrationUI,
+                                (void**)&pAARUI);
   if (SUCCEEDED(hr)) {
-    BOOL isDefaultBrowser = true;
-    BOOL isDefaultMail    = true;
-    BOOL isDefaultNews    = true;
-    if (aApps & nsIShellService::BROWSER)
-      pAAR->QueryAppIsDefaultAll(AL_EFFECTIVE, APP_REG_NAME, &isDefaultBrowser);
-    if (aApps & nsIShellService::MAIL)
-      pAAR->QueryAppIsDefaultAll(AL_EFFECTIVE, APP_REG_NAME_MAIL, &isDefaultMail);
-    if (aApps & nsIShellService::NEWS)
-      pAAR->QueryAppIsDefaultAll(AL_EFFECTIVE, APP_REG_NAME_NEWS, &isDefaultNews);
-
-    *aIsDefaultClient = isDefaultBrowser && isDefaultNews && isDefaultMail;
-
-    pAAR->Release();
-    return true;
+    hr = pAARUI->LaunchAdvancedAssociationUI(APP_REG_NAME);
+    pAARUI->Release();
   }
-  return false;
+  return SUCCEEDED(hr) ? NS_OK : NS_ERROR_FAILURE;
 }
 
-NS_IMETHODIMP
-nsWindowsShellService::IsDefaultClient(bool aStartupCheck, uint16_t aApps, bool *aIsDefaultClient)
+nsresult
+nsWindowsShellService::LaunchControlPanelDefaultPrograms()
 {
-  // If this is the first application window, maintain internal state that we've
-  // checked this session (so that subsequent window opens don't show the
-  // default client dialog).
-  if (aStartupCheck)
-    mCheckedThisSessionClient = true;
-
-  *aIsDefaultClient = true;
-
-  // for each type, check if it is the default app
-  // browser check needs to be at the top
-  if (aApps & nsIShellService::BROWSER) {
-    *aIsDefaultClient &= TestForDefault(gBrowserSettings, sizeof(gBrowserSettings)/sizeof(SETTING));
-    // Only check if this app is default on Vista if the previous checks
-    // indicate that this app is the default.
-    if (*aIsDefaultClient)
-      IsDefaultClientVista(nsIShellService::BROWSER, aIsDefaultClient);
-  }
-  if (aApps & nsIShellService::MAIL) {
-    *aIsDefaultClient &= TestForDefault(gMailSettings, sizeof(gMailSettings)/sizeof(SETTING));
-    // Only check if this app is default on Vista if the previous checks
-    // indicate that this app is the default.
-    if (*aIsDefaultClient)
-      IsDefaultClientVista(nsIShellService::MAIL, aIsDefaultClient);
-  }
-  if (aApps & nsIShellService::NEWS) {
-    *aIsDefaultClient &= TestForDefault(gNewsSettings, sizeof(gNewsSettings)/sizeof(SETTING));
-    // Only check if this app is default on Vista if the previous checks
-    // indicate that this app is the default.
-    if (*aIsDefaultClient)
-      IsDefaultClientVista(nsIShellService::NEWS, aIsDefaultClient);
-  }
-
-  return NS_OK;
-}
-
-
-NS_IMETHODIMP
-nsWindowsShellService::SetDefaultClient(bool aForAllUsers,
-                                        bool aClaimAllTypes, uint16_t aApps)
-{
-  nsAutoString appHelperPath;
-  if (NS_FAILED(GetHelperPath(appHelperPath)))
-    return NS_ERROR_UNEXPECTED;
-
-  if (aForAllUsers)
-    appHelperPath.AppendLiteral(" /SetAsDefaultAppGlobal");
-  else {
-    appHelperPath.AppendLiteral(" /SetAsDefaultAppUser");
-    if (aApps & nsIShellService::BROWSER)
-      appHelperPath.AppendLiteral(" Browser");
-
-    if (aApps & nsIShellService::MAIL)
-      appHelperPath.AppendLiteral(" Mail");
-
-    if (aApps & nsIShellService::NEWS)
-      appHelperPath.AppendLiteral(" News");
-   }
-
-  STARTUPINFOW si = {sizeof(si), 0};
-  PROCESS_INFORMATION pi = {0};
-
-  BOOL ok = CreateProcessW(nullptr, (LPWSTR)appHelperPath.get(), nullptr,
-                           nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
-
-  if (!ok)
+  // Build the path control.exe path safely
+  WCHAR controlEXEPath[MAX_PATH + 1] = { '\0' };
+  if (!GetSystemDirectoryW(controlEXEPath, MAX_PATH)) {
     return NS_ERROR_FAILURE;
+  }
+  LPCWSTR controlEXE = L"control.exe";
+  if (wcslen(controlEXEPath) + wcslen(controlEXE) >= MAX_PATH) {
+    return NS_ERROR_FAILURE;
+  }
+  if (!PathAppendW(controlEXEPath, controlEXE)) {
+    return NS_ERROR_FAILURE;
+  }
 
+  WCHAR params[] = L"control.exe /name Microsoft.DefaultPrograms /page "
+    "pageDefaultProgram\\pageAdvancedSettings?pszAppName=" APP_REG_NAME;
+  STARTUPINFOW si = {sizeof(si), 0};
+  si.dwFlags = STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_SHOWDEFAULT;
+  PROCESS_INFORMATION pi = {0};
+  if (!CreateProcessW(controlEXEPath, params, nullptr, nullptr, FALSE,
+                      0, nullptr, nullptr, &si, &pi)) {
+    return NS_ERROR_FAILURE;
+  }
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
 
   return NS_OK;
 }
 
-NS_IMETHODIMP
-nsWindowsShellService::GetShouldCheckDefaultClient(bool* aResult)
+static bool
+IsWindowsLogonConnected()
 {
-  if (mCheckedThisSessionClient) {
-    *aResult = false;
-    return NS_OK;
+  WCHAR userName[UNLEN + 1];
+  DWORD size = ArrayLength(userName);
+  if (!GetUserNameW(userName, &size)) {
+    return false;
   }
 
-  nsresult rv;
-  nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID, &rv));
-  NS_ENSURE_SUCCESS(rv, rv);
-  return prefs->GetBoolPref(PREF_CHECKDEFAULTCLIENT, aResult);
+  LPUSER_INFO_24 info;
+  if (NetUserGetInfo(nullptr, userName, 24, (LPBYTE *)&info)
+      != NERR_Success) {
+    return false;
+  }
+  bool connected = info->usri24_internet_identity;
+  NetApiBufferFree(info);
+
+  return connected;
 }
 
-
-
-NS_IMETHODIMP
-nsWindowsShellService::SetShouldCheckDefaultClient(bool aShouldCheck)
-{
-  nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID));
-  NS_ENSURE_TRUE(prefs, NS_ERROR_FAILURE);
-  return prefs->SetBoolPref(PREF_CHECKDEFAULTCLIENT, aShouldCheck);
-}
-
-NS_IMETHODIMP
-nsWindowsShellService::GetShouldBeDefaultClientFor(uint16_t* aApps)
+static bool
+SettingsAppBelievesConnected()
 {
   nsresult rv;
-  nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID, &rv));
-  NS_ENSURE_SUCCESS(rv, rv);
-  int32_t result;
-  rv = prefs->GetIntPref("shell.checkDefaultApps", &result);
-  *aApps = result;
-  return rv;
+  nsCOMPtr<nsIWindowsRegKey> regKey =
+    do_CreateInstance("@mozilla.org/windows-registry-key;1", &rv);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  rv = regKey->Open(nsIWindowsRegKey::ROOT_KEY_CURRENT_USER,
+                    NS_LITERAL_STRING("SOFTWARE\\Microsoft\\Windows\\Shell\\Associations"),
+                    nsIWindowsRegKey::ACCESS_READ);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  uint32_t value;
+  rv = regKey->ReadIntValue(NS_LITERAL_STRING("IsConnectedAtLogon"), &value);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  return !!value;
 }
 
-NS_IMETHODIMP
-nsWindowsShellService::SetShouldBeDefaultClientFor(uint16_t aApps)
+nsresult
+nsWindowsShellService::LaunchModernSettingsDialogDefaultApps()
 {
-  nsresult rv;
-  nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID, &rv));
-  NS_ENSURE_SUCCESS(rv, rv);
-  return prefs->SetIntPref("shell.checkDefaultApps", aApps);
-}
+  if (!IsWindowsBuildOrLater(14965) &&
+      !IsWindowsLogonConnected() && SettingsAppBelievesConnected()) {
+    // Use the classic Control Panel to work around a bug of older
+    // builds of Windows 10.
+    return LaunchControlPanelDefaultPrograms();
+  }
 
-NS_IMETHODIMP
-nsWindowsShellService::GetCanSetDesktopBackground(bool* aResult)
-{
-  *aResult = true;
+  IApplicationActivationManager* pActivator;
+  HRESULT hr = CoCreateInstance(CLSID_ApplicationActivationManager,
+                                nullptr,
+                                CLSCTX_INPROC,
+                                IID_IApplicationActivationManager,
+                                (void**)&pActivator);
+
+  if (SUCCEEDED(hr)) {
+    DWORD pid;
+    hr = pActivator->ActivateApplication(
+           L"windows.immersivecontrolpanel_cw5n1h2txyewy"
+           L"!microsoft.windows.immersivecontrolpanel",
+           L"page=SettingsPageAppsDefaults", AO_NONE, &pid);
+    if (SUCCEEDED(hr)) {
+      // Do not check error because we could at least open
+      // the "Default apps" setting.
+      pActivator->ActivateApplication(
+             L"windows.immersivecontrolpanel_cw5n1h2txyewy"
+             L"!microsoft.windows.immersivecontrolpanel",
+             L"page=SettingsPageAppsDefaults"
+             L"&target=SystemSettings_DefaultApps_Browser", AO_NONE, &pid);
+    }
+    pActivator->Release();
+    return SUCCEEDED(hr) ? NS_OK : NS_ERROR_FAILURE;
+  }
   return NS_OK;
+}
+
+nsresult
+nsWindowsShellService::InvokeHTTPOpenAsVerb()
+{
+  nsCOMPtr<nsIURLFormatter> formatter(
+    do_GetService("@mozilla.org/toolkit/URLFormatterService;1"));
+  if (!formatter) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  nsString urlStr;
+  nsresult rv = formatter->FormatURLPref(
+    NS_LITERAL_STRING("app.support.baseURL"), urlStr);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  if (!StringBeginsWith(urlStr, NS_LITERAL_STRING("https://"))) {
+    return NS_ERROR_FAILURE;
+  }
+  urlStr.AppendLiteral("win10-default-browser");
+
+  SHELLEXECUTEINFOW seinfo = { sizeof(SHELLEXECUTEINFOW) };
+  seinfo.lpVerb = L"openas";
+  seinfo.lpFile = urlStr.get();
+  seinfo.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&seinfo)) {
+    return NS_ERROR_FAILURE;
+  }
+  return NS_OK;
+}
+
+nsresult
+nsWindowsShellService::LaunchHTTPHandlerPane()
+{
+  OPENASINFO info;
+  info.pcszFile = L"http";
+  info.pcszClass = nullptr;
+  info.oaifInFlags = OAIF_FORCE_REGISTRATION | 
+                     OAIF_URL_PROTOCOL |
+                     OAIF_REGISTER_EXT;
+  return DynSHOpenWithDialog(nullptr, &info);
+}
+
+NS_IMETHODIMP
+nsWindowsShellService::SetDefaultBrowser(bool aClaimAllTypes, bool aForAllUsers)
+{
+  nsAutoString appHelperPath;
+  if (NS_FAILED(GetHelperPath(appHelperPath)))
+    return NS_ERROR_FAILURE;
+
+  if (aForAllUsers) {
+    appHelperPath.AppendLiteral(" /SetAsDefaultAppGlobal");
+  } else {
+    appHelperPath.AppendLiteral(" /SetAsDefaultAppUser");
+  }
+
+  nsresult rv = LaunchHelper(appHelperPath);
+  if (NS_SUCCEEDED(rv) && IsWin8OrLater()) {
+    if (aClaimAllTypes) {
+      if (IsWin10OrLater()) {
+        rv = LaunchModernSettingsDialogDefaultApps();
+      } else {
+        rv = LaunchControlPanelDefaultsSelectionUI();
+      }
+      // The above call should never really fail, but just in case
+      // fall back to showing the HTTP association screen only.
+      if (NS_FAILED(rv)) {
+        if (IsWin10OrLater()) {
+          rv = InvokeHTTPOpenAsVerb();
+        } else {
+          rv = LaunchHTTPHandlerPane();
+        }
+      }
+    } else {
+      // Windows 10 blocks attempts to load the
+      // HTTP Handler association dialog.
+      if (IsWin10OrLater()) {
+        rv = LaunchModernSettingsDialogDefaultApps();
+      } else {
+        rv = LaunchHTTPHandlerPane();
+      }
+
+      // The above call should never really fail, but just in case
+      // fall back to showing control panel for all defaults
+      if (NS_FAILED(rv)) {
+        rv = LaunchControlPanelDefaultsSelectionUI();
+      }
+    }
+  }
+
+  nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID));
+  if (prefs) {
+    (void) prefs->SetBoolPref(PREF_CHECKDEFAULTBROWSER, true);
+    // Reset the number of times the dialog should be shown
+    // before it is silenced.
+    (void) prefs->SetIntPref(PREF_DEFAULTBROWSERCHECKCOUNT, 0);
+  }
+
+  return rv;
 }
 
 static nsresult
@@ -649,7 +865,7 @@ WriteBitmap(nsIFile* aFile, imgIContainer* aImage)
   nsresult rv;
 
   RefPtr<SourceSurface> surface =
-    aImage->GetFrame(imgIContainer::FRAME_CURRENT,
+    aImage->GetFrame(imgIContainer::FRAME_FIRST,
                      imgIContainer::FLAG_SYNC_DECODE);
   NS_ENSURE_TRUE(surface, NS_ERROR_FAILURE);
 
@@ -666,7 +882,7 @@ WriteBitmap(nsIFile* aFile, imgIContainer* aImage)
   int32_t width = dataSurface->GetSize().width;
   int32_t height = dataSurface->GetSize().height;
   int32_t bytesPerPixel = 4 * sizeof(uint8_t);
-  int32_t bytesPerRow = bytesPerPixel * width;
+  uint32_t bytesPerRow = bytesPerPixel * width;
 
   // initialize these bitmap structs which we will later
   // serialize directly to the head of the bitmap file
@@ -711,11 +927,12 @@ WriteBitmap(nsIFile* aFile, imgIContainer* aImage)
         // write out the image data backwards because the desktop won't
         // show bitmaps with negative heights for top-to-bottom
         uint32_t i = map.mStride * height;
-        rv = NS_OK;
         do {
           i -= map.mStride;
           stream->Write(((const char*)map.mData) + i, bytesPerRow, &written);
-          if (written != bytesPerRow) {
+          if (written == bytesPerRow) {
+            rv = NS_OK;
+          } else {
             rv = NS_ERROR_FAILURE;
             break;
           }
@@ -732,18 +949,17 @@ WriteBitmap(nsIFile* aFile, imgIContainer* aImage)
 }
 
 NS_IMETHODIMP
-nsWindowsShellService::SetDesktopBackground(nsIDOMElement* aElement,
+nsWindowsShellService::SetDesktopBackground(nsIDOMElement* aElement, 
                                             int32_t aPosition)
 {
   nsresult rv;
 
   nsCOMPtr<imgIContainer> container;
-
   nsCOMPtr<nsIDOMHTMLImageElement> imgElement(do_QueryInterface(aElement));
   if (!imgElement) {
     // XXX write background loading stuff!
     return NS_ERROR_NOT_AVAILABLE;
-  }
+  } 
   else {
     nsCOMPtr<nsIImageLoadingContent> imageContent =
       do_QueryInterface(aElement, &rv);
@@ -757,21 +973,20 @@ nsWindowsShellService::SetDesktopBackground(nsIDOMElement* aElement,
     if (!request)
       return rv;
     rv = request->GetImage(getter_AddRefs(container));
+    if (!container)
+      return NS_ERROR_FAILURE;
   }
 
-  if (!container)
-    return NS_ERROR_FAILURE;
-
   // get the file name from localized strings
-  nsCOMPtr<nsIStringBundleService> bundleService =
-    mozilla::services::GetStringBundleService();
-  NS_ENSURE_TRUE(bundleService, NS_ERROR_UNEXPECTED);
+  nsCOMPtr<nsIStringBundleService>
+    bundleService(do_GetService(NS_STRINGBUNDLE_CONTRACTID, &rv));
+  NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<nsIStringBundle> shellBundle;
   rv = bundleService->CreateBundle(SHELLSERVICE_PROPERTIES,
                                    getter_AddRefs(shellBundle));
   NS_ENSURE_SUCCESS(rv, rv);
-
+ 
   // e.g. "Desktop Background.bmp"
   nsString fileLeafName;
   rv = shellBundle->GetStringFromName
@@ -785,7 +1000,7 @@ nsWindowsShellService::SetDesktopBackground(nsIDOMElement* aElement,
                               getter_AddRefs(file));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  // eventually, the path is "%APPDATA%\Mozilla\SeaMonkey\Desktop Background.bmp"
+  // eventually, the path is "%APPDATA%\Mozilla\Borealis\Desktop Background.bmp"
   rv = file->Append(fileLeafName);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -798,43 +1013,152 @@ nsWindowsShellService::SetDesktopBackground(nsIDOMElement* aElement,
 
   // if the file was written successfully, set it as the system wallpaper
   if (NS_SUCCEEDED(rv)) {
-    nsCOMPtr<nsIWindowsRegKey> key(do_CreateInstance("@mozilla.org/windows-registry-key;1", &rv));
+    nsCOMPtr<nsIWindowsRegKey> regKey =
+      do_CreateInstance("@mozilla.org/windows-registry-key;1", &rv);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    rv = key->Create(nsIWindowsRegKey::ROOT_KEY_CURRENT_USER,
-                     NS_LITERAL_STRING("Control Panel\\Desktop"),
-                     nsIWindowsRegKey::ACCESS_SET_VALUE);
+    rv = regKey->Create(nsIWindowsRegKey::ROOT_KEY_CURRENT_USER,
+                        NS_LITERAL_STRING("Control Panel\\Desktop"),
+                        nsIWindowsRegKey::ACCESS_SET_VALUE);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    int style = 0;
+    nsAutoString tile;
+    nsAutoString style;
     switch (aPosition) {
+      case BACKGROUND_TILE:
+        style.Assign('0');
+        tile.Assign('1');
+        break;
+      case BACKGROUND_CENTER:
+        style.Assign('0');
+        tile.Assign('0');
+        break;
       case BACKGROUND_STRETCH:
-        style = 2;
+        style.Assign('2');
+        tile.Assign('0');
         break;
       case BACKGROUND_FILL:
-        style = 10;
+        style.AssignLiteral("10");
+        tile.Assign('0');
         break;
       case BACKGROUND_FIT:
-        style = 6;
+        style.Assign('6');
+        tile.Assign('0');
         break;
     }
 
-    nsString value;
-    value.AppendInt(style);
-    rv = key->WriteStringValue(NS_LITERAL_STRING("WallpaperStyle"), value);
+    rv = regKey->WriteStringValue(NS_LITERAL_STRING("TileWallpaper"), tile);
     NS_ENSURE_SUCCESS(rv, rv);
-
-    value.Assign(aPosition == BACKGROUND_TILE ? '1' : '0');
-    rv = key->WriteStringValue(NS_LITERAL_STRING("TileWallpaper"), value);
+    rv = regKey->WriteStringValue(NS_LITERAL_STRING("WallpaperStyle"), style);
     NS_ENSURE_SUCCESS(rv, rv);
-
-    rv = key->Close();
+    rv = regKey->Close();
     NS_ENSURE_SUCCESS(rv, rv);
 
     ::SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (PVOID)path.get(),
-                            SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE);
+                            SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
   }
   return rv;
+}
+
+NS_IMETHODIMP
+nsWindowsShellService::OpenApplication(int32_t aApplication)
+{
+  nsAutoString application;
+  switch (aApplication) {
+  case nsIShellService::APPLICATION_MAIL:
+    application.AssignLiteral("Mail");
+    break;
+  case nsIShellService::APPLICATION_NEWS:
+    application.AssignLiteral("News");
+    break;
+  }
+
+  // The Default Client section of the Windows Registry looks like this:
+  // 
+  // Clients\aClient\
+  //  e.g. aClient = "Mail"...
+  //        \Mail\(default) = Client Subkey Name
+  //             \Client Subkey Name
+  //             \Client Subkey Name\shell\open\command\ 
+  //             \Client Subkey Name\shell\open\command\(default) = path to exe
+  //
+
+  // Find the default application for this class.
+  HKEY theKey;
+  nsresult rv = OpenKeyForReading(HKEY_CLASSES_ROOT, application, &theKey);
+  if (NS_FAILED(rv))
+    return rv;
+
+  wchar_t buf[MAX_BUF];
+  DWORD type, len = sizeof buf;
+  DWORD res = ::RegQueryValueExW(theKey, EmptyString().get(), 0,
+                                 &type, (LPBYTE)&buf, &len);
+
+  if (REG_FAILED(res) || !*buf)
+    return NS_OK;
+
+  // Close the key we opened.
+  ::RegCloseKey(theKey);
+
+  // Find the "open" command
+  application.Append('\\');
+  application.Append(buf);
+  application.AppendLiteral("\\shell\\open\\command");
+
+  rv = OpenKeyForReading(HKEY_CLASSES_ROOT, application, &theKey);
+  if (NS_FAILED(rv))
+    return rv;
+
+  ::ZeroMemory(buf, sizeof(buf));
+  len = sizeof buf;
+  res = ::RegQueryValueExW(theKey, EmptyString().get(), 0,
+                           &type, (LPBYTE)&buf, &len);
+  if (REG_FAILED(res) || !*buf)
+    return NS_ERROR_FAILURE;
+
+  // Close the key we opened.
+  ::RegCloseKey(theKey);
+
+  // Look for any embedded environment variables and substitute their 
+  // values, as |::CreateProcessW| is unable to do this.
+  nsAutoString path(buf);
+  int32_t end = path.Length();
+  int32_t cursor = 0, temp = 0;
+  ::ZeroMemory(buf, sizeof(buf));
+  do {
+    cursor = path.FindChar('%', cursor);
+    if (cursor < 0) 
+      break;
+
+    temp = path.FindChar('%', cursor + 1);
+    ++cursor;
+
+    ::ZeroMemory(&buf, sizeof(buf));
+
+    ::GetEnvironmentVariableW(nsAutoString(Substring(path, cursor, temp - cursor)).get(),
+                              buf, sizeof(buf));
+    
+    // "+ 2" is to subtract the extra characters used to delimit the environment
+    // variable ('%').
+    path.Replace((cursor - 1), temp - cursor + 2, nsDependentString(buf));
+
+    ++cursor;
+  }
+  while (cursor < end);
+
+  STARTUPINFOW si;
+  PROCESS_INFORMATION pi;
+
+  ::ZeroMemory(&si, sizeof(STARTUPINFOW));
+  ::ZeroMemory(&pi, sizeof(PROCESS_INFORMATION));
+
+  BOOL success = ::CreateProcessW(nullptr, (LPWSTR)path.get(), nullptr,
+                                  nullptr, FALSE, 0, nullptr,  nullptr,
+                                  &si, &pi);
+  if (!success)
+    return NS_ERROR_FAILURE;
+
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -848,30 +1172,40 @@ nsWindowsShellService::GetDesktopBackgroundColor(uint32_t* aColor)
 NS_IMETHODIMP
 nsWindowsShellService::SetDesktopBackgroundColor(uint32_t aColor)
 {
-  int parameter = COLOR_DESKTOP;
+  int aParameters[2] = { COLOR_BACKGROUND, COLOR_DESKTOP };
   BYTE r = (aColor >> 16);
   BYTE g = (aColor << 16) >> 24;
   BYTE b = (aColor << 24) >> 24;
-  COLORREF color = RGB(r,g,b);
+  COLORREF colors[2] = { RGB(r,g,b), RGB(r,g,b) };
 
-  ::SetSysColors(1, &parameter, &color);
+  ::SetSysColors(sizeof(aParameters) / sizeof(int), aParameters, colors);
 
   nsresult rv;
-  nsCOMPtr<nsIWindowsRegKey> key(do_CreateInstance("@mozilla.org/windows-registry-key;1", &rv));
+  nsCOMPtr<nsIWindowsRegKey> regKey =
+    do_CreateInstance("@mozilla.org/windows-registry-key;1", &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = key->Create(nsIWindowsRegKey::ROOT_KEY_CURRENT_USER,
-                   NS_LITERAL_STRING("Control Panel\\Colors"),
-                   nsIWindowsRegKey::ACCESS_SET_VALUE);
+  rv = regKey->Create(nsIWindowsRegKey::ROOT_KEY_CURRENT_USER,
+                      NS_LITERAL_STRING("Control Panel\\Colors"),
+                      nsIWindowsRegKey::ACCESS_SET_VALUE);
   NS_ENSURE_SUCCESS(rv, rv);
 
   wchar_t rgb[12];
   _snwprintf(rgb, 12, L"%u %u %u", r, g, b);
-  rv = key->WriteStringValue(NS_LITERAL_STRING("Background"),
-                             nsDependentString(rgb));
+
+  rv = regKey->WriteStringValue(NS_LITERAL_STRING("Background"),
+                                nsDependentString(rgb));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  return key->Close();
+  return regKey->Close();
+}
+
+nsWindowsShellService::nsWindowsShellService()
+{
+}
+
+nsWindowsShellService::~nsWindowsShellService()
+{
 }
 
 NS_IMETHODIMP
@@ -879,16 +1213,16 @@ nsWindowsShellService::OpenApplicationWithURI(nsIFile* aApplication,
                                               const nsACString& aURI)
 {
   nsresult rv;
-  nsCOMPtr<nsIProcess> process =
+  nsCOMPtr<nsIProcess> process = 
     do_CreateInstance("@mozilla.org/process/util;1", &rv);
   if (NS_FAILED(rv))
     return rv;
-
+  
   rv = process->Init(aApplication);
   if (NS_FAILED(rv))
     return rv;
-
-  const nsCString& spec = PromiseFlatCString(aURI);
+  
+  const nsCString spec(aURI);
   const char* specStr = spec.get();
   return process->Run(false, &specStr, 1);
 }
@@ -899,16 +1233,17 @@ nsWindowsShellService::GetDefaultFeedReader(nsIFile** _retval)
   *_retval = nullptr;
 
   nsresult rv;
-  nsCOMPtr<nsIWindowsRegKey> key(do_CreateInstance("@mozilla.org/windows-registry-key;1", &rv));
+  nsCOMPtr<nsIWindowsRegKey> regKey =
+    do_CreateInstance("@mozilla.org/windows-registry-key;1", &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = key->Open(nsIWindowsRegKey::ROOT_KEY_CLASSES_ROOT,
-                 NS_LITERAL_STRING("feed\\shell\\open\\command"),
-                 nsIWindowsRegKey::ACCESS_READ);
+  rv = regKey->Open(nsIWindowsRegKey::ROOT_KEY_CLASSES_ROOT,
+                    NS_LITERAL_STRING("feed\\shell\\open\\command"),
+                    nsIWindowsRegKey::ACCESS_READ);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsString path;
-  rv = key->ReadStringValue(EmptyString(), path);
+  nsAutoString path;
+  rv = regKey->ReadStringValue(EmptyString(), path);
   NS_ENSURE_SUCCESS(rv, rv);
   if (path.IsEmpty())
     return NS_ERROR_FAILURE;
@@ -916,7 +1251,8 @@ nsWindowsShellService::GetDefaultFeedReader(nsIFile** _retval)
   if (path.First() == '"') {
     // Everything inside the quotes
     path = Substring(path, 1, path.FindChar('"', 1) - 1);
-  } else {
+  }
+  else {
     // Everything up to the first space
     path = Substring(path, 0, path.FindChar(' '));
   }

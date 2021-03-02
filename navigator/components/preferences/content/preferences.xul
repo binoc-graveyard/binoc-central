@@ -87,7 +87,7 @@
         </treechildren>
       </treeitem>
 
-      <!-- Content items (formerly Apperence) -->
+      <!-- Content items (formerly Appearance) -->
       <treeitem open="true"
                 container="true"
                 id="contentItem"
@@ -103,14 +103,22 @@
                     label="&fonts.label;"
                     prefpane="fonts_pane"
                     url="chrome://communicator/content/pref/pref-fonts.xul"/>
-          <treeitem id="spellingItem"
-                    label="&spellingPane.label;"
-                    prefpane="spelling_pane"
-                    url="chrome://communicator/content/pref/pref-spelling.xul"/>
           <treeitem id="languagesItem"
                     label="&languages.label;"
                     prefpane="languages_pane"
                     url="chrome://communicator/content/pref/pref-languages.xul"/>
+          <treeitem id="mediaItem"
+                    label="&media.label;"
+                    prefpane="media_pane"
+                    url="chrome://communicator/content/pref/pref-media.xul"/>
+          <treeitem id="scriptsItem"
+                    label="&scriptsAndWindows.label;"
+                    prefpane="scripts_pane"
+                    url="chrome://communicator/content/pref/pref-scripts.xul"/>
+          <treeitem id="popupsItem"
+                    label="&popups.label;"
+                    prefpane="popups_pane"
+                    url="chrome://communicator/content/pref/pref-popups.xul"/>
           <treeitem id="mousewheelItem"
                     label="&mousewheel.label;"
                     prefpane="mousewheel_pane"
@@ -178,22 +186,10 @@
                     label="&certs.label;"
                     prefpane="certs_pane"
                     url="chrome://pippki/content/pref-certs.xul"/>
-          <treeitem id="imagesItem"
-                    label="&images.label;"
-                    prefpane="images_pane"
-                    url="chrome://communicator/content/pref/pref-images.xul"/>
-          <treeitem id="popupsItem"
-                    label="&popups.label;"
-                    prefpane="popups_pane"
-                    url="chrome://communicator/content/pref/pref-popups.xul"/>
           <treeitem id="masterpassItem"
                     label="&masterpass.label;"
                     prefpane="masterpass_pane"
                     url="chrome://communicator/content/pref/pref-masterpass.xul"/>
-          <treeitem id="scriptsItem"
-                    label="&scriptsAndWindows.label;"
-                    prefpane="scripts_pane"
-                    url="chrome://communicator/content/pref/pref-scripts.xul"/>
         </treechildren>
       </treeitem>
 

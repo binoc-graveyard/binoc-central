@@ -10,7 +10,6 @@
 <!ENTITY content.label "Content">
 <!ENTITY fonts.label "Fonts">
 <!ENTITY colors.label "Colors">
-<!ENTITY spellingPane.label "Spelling">
 
 <!ENTITY navigator.label "Navigator">
 <!ENTITY history.label "History">
@@ -26,7 +25,7 @@
 
 <!ENTITY privatedata.label "Private Data">
 <!ENTITY cookies.label "Cookies">
-<!ENTITY images.label "Images">
+<!ENTITY media.label  "Multimedia">
 <!ENTITY popups.label "Popup Windows">
 <!ENTITY masterpass.label "Passwords">
 <!ENTITY ssltls.label "Encryption">

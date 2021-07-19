@@ -1,65 +1,132 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
-
 @namespace url("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul");
-
-.tabbrowser-strip {
-  min-height: 0px;
-  padding: 0px;
-  /* 1px ThreeDShadow bottom border that doesn't take up space and that
-     selected panel can just draw over */
-  box-shadow: 0px -1px ThreeDShadow inset;
-}
 
 tabpanels {
   -moz-appearance: none;
 }
 
-.tabbrowser-tabs {
-  padding-top: 1px;
-}
-
-.tabs-left,
-.tabs-right {
-  width: 3px;
+.tabbrowser-strip {
+  -moz-appearance: none;
+  background-image: linear-gradient(rgba(0, 0, 0, .11), transparent, rgba(0, 0, 0, .06));
   border-bottom: none;
 }
 
-.tab-icon {
-  margin-top: 1px;
-  margin-inline-start: 1px;
-  margin-inline-end: 4px;
+@media (-moz-os-version: windows-win8) {
+  .tabbrowser-strip { border-top: 1px solid ThreeDShadow !important; }
+}
+
+@media (-moz-os-version: windows-win7) and (-moz-windows-theme: aero) {
+  .tabbrowser-strip { -moz-appearance: -moz-win-browsertabbar-toolbox; }
+}
+
+.tabbrowser-arrowscrollbox {
+  margin-bottom: 3px;
+ }
+
+.tabbrowser-tabs[overflow="true"] {
+  -moz-padding-start: 0px;
+}
+
+.tabbrowser-tabs > .tabbrowser-tab:first-child > .tab-close-button {
+  visibility: collapse;
+}
+
+/**
+ * Tab
+ */
+
+.tabbrowser-tab {
+  -moz-appearance: none;
+  background: url("chrome://navigator/skin/icons/tab-bkgnd.png") repeat-x;
+  margin: 3px 0px 4px;
+  border: 2px solid;
+  border-right-width: 1px;
+  border-bottom: none;
+  border-radius: 2px 2px 0 0;
+  padding: 1px 4px 2px 4px;
+  -moz-border-right-colors: rgba(0,0,0,.1);
+  -moz-border-top-colors: ThreeDShadow rgba(255,255,255,.3);
+  -moz-border-left-colors: ThreeDShadow rgba(255,255,255,.3);
+  margin-bottom: 0;
+  height: 23px !important;
+}
+
+.tabbrowser-tab:not(:hover):not([selected]):last-child {
+  -moz-border-right-colors: ThreeDShadow rgba(255,255,255,.3);
+}
+
+.tabbrowser-tab:hover,
+.tabbrowser-tab[selected="true"] {
+  border-radius: 4px 4px 0 0;
+  -moz-border-top-colors: ThreeDShadow transparent;
+  -moz-border-right-colors: ThreeDShadow transparent;
+  -moz-border-left-colors: ThreeDShadow transparent;
+  margin-top: 2px;
+}
+
+.tabbrowser-tab:not([selected="true"]):hover {
+  background: url("chrome://navigator/skin/icons/tab-hover-bkgnd.png") 0px 0px repeat-x;
+  padding: 1px 4px 1px 4px;
+}
+
+.tabbrowser-tab[selected="true"] {
+  background: -moz-Dialog url("chrome://navigator/skin/icons/tab-active-bkgnd.png") repeat-x;
+  font-weight: bold;
+  padding: 1px 4px 0px 4px;
+  height: 24px !important;
+}
+
+.tabbrowser-tab[selected="true"] .tab-text {
+  margin-top: -1px !important;
+}
+
+.tabbrowser-tab[busy],
+.tabbrowser-tab[thinking] {
+  list-style-image: url("chrome://global/skin/icons/loading_16.png") !important;
+  -moz-image-region: auto !important;
+}
+
+.tabs-bottom {
+  height: 4px !important;
+  margin: 0px !important;
+  background: -moz-dialog !important;
+  border-top: 1px solid threedshadow;
+  border-bottom: 1px solid threedshadow;
+}
+
+.tab-icon,
+.tab-throbber {
+  -moz-margin-end: 3px;
+  margin-bottom: 1px;
+
   width: 16px;
   height: 16px;
 }
 
 .tabbrowser-tab {
   list-style-image: url("chrome://communicator/skin/bookmarks/bookmark-item.png");
-  padding: 0px 2px 2px;
-  margin-bottom: 1px;
-  border-bottom: none;
 }
 
-.tabbrowser-tab[busy] {
-  list-style-image: url("chrome://communicator/skin/icons/loading.gif");
+tabpanels {
+  -moz-appearance: none;
+  background-color: transparent;
 }
 
-.tabbrowser-tab[selected="true"] {
-  margin-bottom: 0px;
-  padding-top: 2px; /* compensates the top margin of background tabs */
-  padding-bottom: 3px; /* compensates the bottom margin of background tabs */
+.tabs-left,
+.tabs-right {
+  width: 3px;
+  border-bottom-width: 0px;
 }
 
-.tabbrowser-tab:-moz-lwtheme {
-  text-shadow: none;
+/* tabbrowser-tab focus ring */
+.tabbrowser-tab >  .tab-image-middle > .tab-text {
+  border: 1px dotted transparent;
 }
 
-.scrollbutton-up:-moz-lwtheme,
-.scrollbutton-down:-moz-lwtheme:not([selected="true"]),
-.tabbrowser-tab:-moz-lwtheme:not([selected="true"]) {
-  opacity: .8;
+.tabbrowser-tab:focus > .tab-image-middle > .tab-text {
+  border: 1px dotted -moz-DialogText;
 }
 
 /* ::::: Tab scrollbox arrow, and all-tabs buttons ::::: */
@@ -134,7 +201,7 @@ tabpanels {
 }
 
 .tabs-alltabs-button {
-  margin: 2px 0px 1px;
+  margin-bottom: 1px;
 }
 
 .tabs-alltabs-button > .toolbarbutton-icon {
@@ -160,14 +227,66 @@ tabpanels {
 
 /* ::::: close button ::::: */
 
+.tabs-closebutton-box {
+  padding-bottom: 2px;
+} 
+
 .tabs-closebutton {
-  margin: 3px;
-  list-style-image: url("chrome://communicator/skin/icons/close-button.gif");
+  -moz-appearance: none;
+  list-style-image: url("chrome://communicator/skin/icons/tab-close.png") !important;
+  -moz-image-region: rect(0px, 64px, 16px, 48px);
+  -moz-user-focus: normal;
+  margin-inline-end: 2px;
+  margin-top: 0px;
+  padding: 0 3px;
+  border: none !important;
+  cursor: default;
 }
 
+.tabs-closebutton:not([selected="true"]) {
+  -moz-image-region: rect(0, 64px, 16px, 48px);
+}
+
+.tabs-closebutton:hover,
+.tabs-closebutton:hover[selected="true"] {
+  -moz-image-region: rect(0, 32px, 16px, 16px);
+}
+
+.tabs-closebutton:hover:active,
+.tabs-closebutton:hover:active[selected="true"] {
+  -moz-image-region: rect(0, 48px, 16px, 32px);
+}
+
+.tabs-closebutton[selected="true"] {
+  -moz-image-region: rect(0, 16px, 16px, 0);
+}
+
+.tabs-closebutton:focus {
+  outline: none !important;
+}
+
+.tab-close-button > .toolbarbutton-icon {
+  -moz-margin-end: 0px !important;
+}
+
+/* ::::: new tab button ::::: */
+
 .tabs-newbutton {
-  margin: 0px;
-  list-style-image: url("chrome://navigator/skin/icons/tab-new.gif");
+  -moz-appearance: none;
+  border: none;
+  list-style-image: url("chrome://navigator/skin/icons/tab-new.png");
+}
+
+.tabs-newbutton:hover:not(:active) {
+  filter: saturate(120%) brightness(110%);
+}
+
+.tabs-newbutton:not([disabled="true"]):hover:active {
+  filter: brightness(75%);
+}
+
+.tabs-newbutton:focus {
+  outline: none !important;
 }
 
 .tab-drop-indicator-bar {

@@ -26,7 +26,7 @@
 pref("devtools.selfxss.count", 5);
 #endif
 
-pref("general.skins.selectedSkin", "modern/1.0");
+pref("general.skins.selectedSkin", "classic/1.0");
 
 pref("general.startup.browser",             true);
 pref("general.startup.mail",                false);
